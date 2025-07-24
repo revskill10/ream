@@ -1,0 +1,188 @@
+[package]
+name = "ream"
+version = "0.1.0"
+edition = "2021"
+authors = ["REAM Team"]
+description = "Rust Erlang Abstract Machine - A mathematically-grounded actor runtime with bytecode JIT compilation and TLISP"
+license = "MIT"
+repository = "https://github.com/ream-lang/ream"
+
+[dependencies]
+# Core dependencies
+tokio = { version = "1.0", features = ["full"] }
+num_cpus = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+toml = "0.8"
+bincode = "1.3"
+uuid = { version = "1.0", features = ["v4", "serde"] }
+thiserror = "1.0"
+anyhow = "1.0"
+chrono = { version = "0.4", features = ["serde"] }
+bytes = "1.0"
+hex = "0.4"
+
+# HTTP server and client
+warp = "0.3"
+reqwest = { version = "0.11", features = ["json"] }
+
+# TUI and daemon dependencies
+ratatui = "0.24"
+crossterm = "0.27"
+tui-input = "0.8"
+
+# Concurrency and async
+crossbeam = "0.8"
+crossbeam-channel = "0.5"
+parking_lot = "0.12"
+dashmap = "5.0"
+
+# Memory management
+bumpalo = "3.0"
+typed-arena = "2.0"
+
+# FFI and dynamic loading
+libloading = "0.8"
+libc = "0.2"
+
+# JIT compilation (simplified for now)
+# dynasmrt = "1.2"
+# cranelift = "0.95"
+# cranelift-jit = "0.95"
+# cranelift-module = "0.95"
+# cranelift-codegen = "0.95"
+
+# Parsing and lexing (simplified for now)
+# nom = "7.0"
+# logos = "0.13"
+
+# Type system
+im = "15.0"
+petgraph = "0.6"
+
+# Procedural macros
+ream-macros = { path = "ream-macros" }
+
+# CLI
+clap = { version = "4.0", features = ["derive"] }
+colored = "2.0"
+rustyline = "12.0"
+
+# Package manager dependencies
+dirs = "5.0"
+env_logger = "0.10"
+raft = "0.7"
+chacha20poly1305 = "0.10"
+aes-gcm = "0.10"
+argon2 = "0.5"
+ring = "0.17"
+zeroize = { version = "1.7", features = ["derive"] }
+prost = "0.12"
+lz4_flex = "0.11"
+rand = "0.8"
+zstd = "0.13"
+
+# Database and ORM dependencies
+rusqlite = { version = "0.29", features = ["bundled"] }
+sqlx = { version = "0.7", features = ["runtime-tokio-rustls", "sqlite", "postgres", "mysql", "chrono", "uuid"] }
+nom = "7.1"  # For SQL parsing in ORM
+async-trait = "0.1"  # For async traits in ORM
+proc-macro2 = "1.0"  # For macro implementation
+quote = "1.0"  # For macro code generation
+syn = { version = "2.0", features = ["full"] }  # For macro parsing
+
+# GraphQL dependencies
+graphql-parser = "0.4"  # For GraphQL query parsing
+async-graphql = { version = "7.0", features = ["chrono", "uuid"] }  # GraphQL schema and execution
+async-graphql-parser = "7.0"  # GraphQL query parsing utilities
+
+# Daemon and IPC dependencies (Unix only)
+[target.'cfg(unix)'.dependencies]
+daemonize = "0.5"
+nix = { version = "0.27", features = ["signal", "process"] }
+
+# Utilities
+lazy_static = "1.4"
+once_cell = "1.19"
+tracing = { version = "0.1", optional = true }
+tracing-subscriber = { version = "0.3", optional = true }
+libc = "0.2"
+
+# Security and cryptography dependencies
+raft = "0.7"
+chacha20poly1305 = "0.10"
+aes-gcm = "0.10"
+argon2 = "0.5"
+ring = "0.17"
+zeroize = { version = "1.7", features = ["derive"] }
+prost = "0.12"
+lz4_flex = "0.11"
+zstd = "0.13"
+
+# Platform-specific dependencies
+[target.'cfg(windows)'.dependencies]
+winapi = { version = "0.3", features = ["memoryapi", "winnt"] }
+
+[dev-dependencies]
+criterion = "0.5"
+proptest = "1.0"
+quickcheck = "1.0"
+tempfile = "3.0"
+futures = "0.3"
+
+# [[bench]]
+# name = "runtime_bench"
+# harness = false
+
+# [[bench]]
+# name = "bytecode_bench"
+# harness = false
+
+# [[bench]]
+# name = "tlisp_bench"
+# harness = false
+
+[lib]
+name = "ream"
+path = "src/lib.rs"
+
+[[bin]]
+name = "ream-pkg"
+path = "src/bin/ream-pkg.rs"
+
+# [[bin]]
+# name = "ream-repl"
+# path = "src/bin/repl.rs"
+
+# [[bin]]
+# name = "ream-compile"
+# path = "src/bin/compile.rs"
+
+[features]
+default = ["package-manager", "daemon", "tui"]
+runtime = []
+debug = []
+package-manager = []
+daemon = []
+tui = []
+
+[[example]]
+name = "fibonacci"
+path = "examples/fibonacci.rs"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+
+[profile.dev]
+opt-level = 0
+debug = true
+overflow-checks = true
+
+[workspace]
+members = [
+    ".",
+    "ream-macros"
+]
