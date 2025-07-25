@@ -95,6 +95,24 @@ impl BytecodeCompiler {
             0 // Placeholder
         }
     }
+
+    /// Create a label (alias for label_ref for compatibility)
+    pub fn create_label(&mut self, name: &str) -> String {
+        name.to_string()
+    }
+
+    /// Place a label at current position (alias for define_label for compatibility)
+    pub fn place_label(&mut self, name: String) {
+        self.define_label(name);
+    }
+
+    /// Add a function to the program (for compatibility)
+    pub fn add_function(&mut self, function: BytecodeProgram) {
+        // For now, just merge the function's instructions into the main program
+        // In a full implementation, this would properly handle function management
+        self.program.instructions.extend(function.instructions);
+        self.program.constants.extend(function.constants);
+    }
     
     /// Allocate a local variable
     pub fn alloc_local(&mut self, name: String) -> u32 {

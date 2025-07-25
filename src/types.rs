@@ -61,7 +61,7 @@ impl Default for Priority {
 }
 
 /// Effect grades for tracking side effects in bytecode
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum EffectGrade {
     /// Pure computation - no side effects
     Pure,
@@ -69,6 +69,8 @@ pub enum EffectGrade {
     Read,
     /// Memory writes
     Write,
+    /// Memory operations (allocation/deallocation)
+    Memory,
     /// Message sends
     Send,
     /// Process creation

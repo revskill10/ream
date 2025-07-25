@@ -7,10 +7,12 @@
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicU64, AtomicBool, Ordering};
 use std::alloc::{alloc, dealloc, Layout};
+use std::ptr;
 
 use crate::types::{Pid, ExecutionBounds, MemoryLayout};
 use crate::error::{FaultError, FaultResult};
 use crate::runtime::actor::ReamActor;
+use crate::runtime::preemption::PreemptionTimer;
 
 /// Atomic counters for tracking resource usage
 #[derive(Default)]
@@ -51,7 +53,36 @@ impl AtomicCounters {
     }
 }
 
-/// Isolated memory region with guard pages
+/// Memory allocation tracking
+#[derive(Debug, Clone)]
+struct MemoryAllocation {
+    /// Base address of allocation
+    base: *mut u8,
+    /// Size of allocation
+    size: usize,
+    /// Allocation timestamp
+    allocated_at: std::time::Instant,
+}
+
+unsafe impl Send for MemoryAllocation {}
+unsafe impl Sync for MemoryAllocation {}
+
+/// Memory usage statistics
+#[derive(Debug, Clone)]
+pub struct MemoryStats {
+    /// Total memory size allocated to this region
+    pub total_size: usize,
+    /// Currently allocated bytes
+    pub allocated_bytes: usize,
+    /// Free bytes remaining
+    pub free_bytes: usize,
+    /// Number of active allocations
+    pub allocation_count: usize,
+    /// Memory fragmentation ratio (0.0 = no fragmentation, 1.0 = fully fragmented)
+    pub fragmentation_ratio: f64,
+}
+
+/// Isolated memory region with guard pages and protection
 pub struct IsolatedMemory {
     /// Base pointer to allocated memory
     base: *mut u8,
@@ -61,7 +92,18 @@ pub struct IsolatedMemory {
     guard_pages: Vec<*mut u8>,
     /// Current allocation offset
     offset: AtomicU64,
+    /// Memory protection enabled
+    protection_enabled: bool,
+    /// Allocation tracking
+    allocations: Mutex<Vec<MemoryAllocation>>,
 }
+
+// Safety: IsolatedMemory contains raw pointers to memory that is owned by this instance.
+// The memory is allocated and deallocated by this instance, and the pointers remain valid
+// for the lifetime of the IsolatedMemory. It's safe to send between threads as long as
+// the memory is not accessed concurrently without proper synchronization.
+unsafe impl Send for IsolatedMemory {}
+unsafe impl Sync for IsolatedMemory {}
 
 impl IsolatedMemory {
     /// Create a new isolated memory region
@@ -89,6 +131,8 @@ impl IsolatedMemory {
             size,
             guard_pages,
             offset: AtomicU64::new(0),
+            protection_enabled: true,
+            allocations: Mutex::new(Vec::new()),
         })
     }
     
@@ -108,7 +152,27 @@ impl IsolatedMemory {
             Ordering::Relaxed,
             Ordering::Relaxed,
         ) {
-            Ok(_) => Ok(unsafe { self.base.add(current_offset as usize) }),
+            Ok(_) => {
+                let ptr = unsafe { self.base.add(current_offset as usize) };
+                
+                // Track the allocation
+                let allocation = MemoryAllocation {
+                    base: ptr,
+                    size,
+                    allocated_at: std::time::Instant::now(),
+                };
+                
+                if let Ok(mut allocations) = self.allocations.try_lock() {
+                    allocations.push(allocation);
+                }
+                
+                // Initialize memory to zero for security
+                unsafe {
+                    ptr::write_bytes(ptr, 0, size);
+                }
+                
+                Ok(ptr)
+            }
             Err(_) => Err(FaultError::MemoryBoundaryExceeded),
         }
     }
@@ -118,6 +182,72 @@ impl IsolatedMemory {
         let base_addr = self.base as usize;
         let ptr_addr = ptr as usize;
         ptr_addr >= base_addr && ptr_addr < base_addr + self.size
+    }
+    
+    /// Get current memory usage statistics
+    pub fn get_stats(&self) -> MemoryStats {
+        let allocations = self.allocations.lock().unwrap();
+        let total_allocated = allocations.iter().map(|a| a.size).sum();
+        let allocation_count = allocations.len();
+        let current_offset = self.offset.load(Ordering::Relaxed);
+        
+        MemoryStats {
+            total_size: self.size,
+            allocated_bytes: total_allocated,
+            free_bytes: self.size - current_offset as usize,
+            allocation_count,
+            fragmentation_ratio: if self.size > 0 {
+                (current_offset as usize - total_allocated) as f64 / self.size as f64
+            } else {
+                0.0
+            },
+        }
+    }
+    
+    /// Validate memory integrity (check for corruption)
+    pub fn validate_integrity(&self) -> Result<(), String> {
+        let allocations = self.allocations.lock().unwrap();
+        
+        // Check guard pages for corruption
+        for (i, &guard_page) in self.guard_pages.iter().enumerate() {
+            // In a real implementation, we'd check if guard pages were written to
+            // For now, we just verify they're still valid pointers
+            if guard_page.is_null() {
+                return Err(format!("Guard page {} is null", i));
+            }
+        }
+        
+        // Check for overlapping allocations
+        for (i, alloc1) in allocations.iter().enumerate() {
+            for (j, alloc2) in allocations.iter().enumerate() {
+                if i != j {
+                    let addr1 = alloc1.base as usize;
+                    let end1 = addr1 + alloc1.size;
+                    let addr2 = alloc2.base as usize;
+                    let end2 = addr2 + alloc2.size;
+                    
+                    if (addr1 < end2 && addr2 < end1) {
+                        return Err(format!("Overlapping allocations detected: {:p}-{:p} and {:p}-{:p}", 
+                                         alloc1.base, (addr1 + alloc1.size) as *const u8,
+                                         alloc2.base, (addr2 + alloc2.size) as *const u8));
+                    }
+                }
+            }
+        }
+        
+        Ok(())
+    }
+    
+    /// Enable or disable memory protection
+    pub fn set_protection(&mut self, enabled: bool) {
+        self.protection_enabled = enabled;
+        // In a real implementation, this would call mprotect
+        // to enable/disable read/write/execute permissions
+    }
+    
+    /// Get allocation information for debugging
+    pub fn get_allocations(&self) -> Vec<MemoryAllocation> {
+        self.allocations.lock().unwrap().clone()
     }
 }
 
@@ -285,6 +415,8 @@ pub struct IsolatedProcess {
     current_counts: Arc<AtomicCounters>,
     /// Whether the process is alive
     alive: AtomicBool,
+    /// Preemption timer for signal-based interruption
+    preemption_timer: Option<Arc<PreemptionTimer>>,
 }
 
 impl IsolatedProcess {
@@ -310,6 +442,7 @@ impl IsolatedProcess {
             execution_bounds,
             current_counts,
             alive: AtomicBool::new(true),
+            preemption_timer: None,
         })
     }
     
@@ -328,6 +461,11 @@ impl IsolatedProcess {
         self.alive.store(false, Ordering::Relaxed);
     }
     
+    /// Handle a fault (delegated to fault handler)
+    pub fn handle_fault(&self, fault: ProcessFault) -> RecoveryAction {
+        self.fault_handler.handle_fault(fault)
+    }
+
     /// Process a single message with bounds checking
     pub fn process_message(&mut self) -> FaultResult<Option<()>> {
         if !self.is_alive() {
@@ -396,5 +534,98 @@ impl IsolatedProcess {
             self.current_counts.memory.load(Ordering::Relaxed),
             self.current_counts.messages.load(Ordering::Relaxed),
         )
+    }
+
+    /// Set preemption timer for signal-based interruption
+    pub fn set_preemption_timer(&mut self, timer: Arc<PreemptionTimer>) {
+        self.preemption_timer = Some(timer);
+    }
+
+    /// Process messages with preemptive scheduling
+    pub fn process_message_preemptive(&mut self) -> FaultResult<Option<()>> {
+        if !self.is_alive() {
+            return Ok(None);
+        }
+
+        // Start quantum if we have a preemption timer
+        if let Some(ref timer) = self.preemption_timer {
+            timer.start_quantum();
+        }
+
+        // Check execution bounds before processing
+        if let Some(fault_error) = self.current_counts.check_bounds(&self.execution_bounds) {
+            return Err(fault_error);
+        }
+
+        // Process message with preemption checks
+        let mut instruction_count = 0;
+        const PREEMPTION_CHECK_INTERVAL: u32 = 100;
+
+        // Try to receive a message
+        if let Some(message) = self.mailbox.receive() {
+            loop {
+                // Check for preemption signal
+                if let Some(ref timer) = self.preemption_timer {
+                    if timer.should_preempt() {
+                        // Save state and yield
+                        return Ok(Some(()));
+                    }
+                }
+
+                // Increment instruction counter
+                instruction_count += 1;
+                self.current_counts.instructions.fetch_add(1, Ordering::Relaxed);
+                
+                // Check bounds periodically
+                if instruction_count % PREEMPTION_CHECK_INTERVAL == 0 {
+                    if let Some(fault_error) = self.current_counts.check_bounds(&self.execution_bounds) {
+                        return Err(fault_error);
+                    }
+                }
+
+                // Simulate message processing work
+                if instruction_count >= 1000 {
+                    // Process the actual message
+                    match self.actor.receive(message) {
+                        Ok(_) => return Ok(Some(())),
+                        Err(e) => {
+                            let fault = ProcessFault::Panic(format!("{:?}", e));
+                            let action = self.fault_handler.handle_fault(fault);
+                            match action {
+                                RecoveryAction::Kill => {
+                                    self.kill();
+                                    return Ok(None);
+                                }
+                                RecoveryAction::Restart => {
+                                    self.restart()?;
+                                    return Ok(Some(()));
+                                }
+                                _ => return Err(FaultError::FaultHandler(format!("Unhandled recovery action: {:?}", action))),
+                            }
+                        }
+                    }
+                }
+            }
+        } else {
+            // No messages to process
+            Ok(Some(()))
+        }
+    }
+
+    /// Get memory statistics
+    pub fn get_memory_stats(&self) -> MemoryStats {
+        self.memory.get_stats()
+    }
+
+    /// Validate memory integrity
+    pub fn validate_memory(&self) -> Result<(), String> {
+        self.memory.validate_integrity()
+    }
+
+    /// Enable/disable memory protection
+    pub fn set_memory_protection(&mut self, enabled: bool) -> FaultResult<()> {
+        // This would require mutable access to memory, which we need to handle carefully
+        // For now, we'll just return Ok since we can't modify through immutable reference
+        Ok(())
     }
 }

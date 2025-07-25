@@ -32,6 +32,12 @@ pub mod example_tests;
 pub mod standard_library;
 pub mod pattern_matching;
 pub mod serverless;
+pub mod enhanced_compiler;
+pub mod actor_system;
+pub mod security_integration;
+pub mod resource_integration;
+pub mod production_stdlib;
+pub mod production_runtime;
 
 // Test modules
 #[cfg(test)]
@@ -45,8 +51,7 @@ pub mod tests;
 // pub mod effect_system;
 
 use std::collections::HashMap;
-use std::rc::Rc;
-use std::cell::RefCell;
+use std::sync::{Arc, Mutex};
 use serde::{Deserialize, Serialize};
 
 use crate::bytecode::{LanguageCompiler, BytecodeCompiler, BytecodeProgram, Bytecode, TypeInfo};
@@ -72,6 +77,12 @@ pub use rust_integration::{RustIntegration, RustFunction, RustModule};
 pub use rust_crate_integration::{RustCrateIntegration, RustCrateMetadata, CrateBuildOptions};
 pub use standard_library::StandardLibrary;
 pub use pattern_matching::{PatternMatcher, Pattern};
+pub use enhanced_compiler::EnhancedTlispCompiler;
+pub use actor_system::{TlispActorSystem, TlispActor, ActorSystemConfig, RealTimeConstraints, SecurityLevel, ActorInfo, ActorSystemStats};
+pub use security_integration::{TlispSecurityManager, TlispSecurityLevel, TlispSecurityPolicy, TlispMemoryLimits, TlispIOPermissions, TlispNetworkPermissions, TlispAuditEvent, TlispSecurityStats};
+pub use resource_integration::{TlispResourceManager, TlispResourceQuotas, TlispSpecificLimits, TlispResourceUsage, TlispResourceStats, TlispResourceConfig, TlispWarningThresholds};
+pub use production_stdlib::{ProductionStandardLibrary, GlobalState};
+pub use production_runtime::{ProductionTlispRuntime, ProductionRuntimeConfig, RuntimeStats, ExecutionResult, ExecutionMode, ExecutionMetrics};
 
 /// TLISP expression as initial algebra
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -102,6 +113,10 @@ pub enum Expr<T> {
     Define(String, Box<Expr<T>>, T),
     /// Set expression (assignment)
     Set(String, Box<Expr<T>>, T),
+    /// Macro definition
+    Macro(String, Vec<String>, Box<Expr<T>>, T),
+    /// Type annotation
+    TypeAnnotation(Box<Expr<T>>, Box<Expr<T>>, T),
 }
 
 impl<T> Expr<T> {
@@ -121,6 +136,8 @@ impl<T> Expr<T> {
             Expr::Quote(_, t) => t,
             Expr::Define(_, _, t) => t,
             Expr::Set(_, _, t) => t,
+            Expr::Macro(_, _, _, t) => t,
+            Expr::TypeAnnotation(_, _, t) => t,
         }
     }
     
@@ -140,6 +157,8 @@ impl<T> Expr<T> {
             Expr::Quote(e, _) => Expr::Quote(e, new_type),
             Expr::Define(name, value, _) => Expr::Define(name, value, new_type),
             Expr::Set(name, value, _) => Expr::Set(name, value, new_type),
+            Expr::Macro(name, params, body, _) => Expr::Macro(name, params, body, new_type),
+            Expr::TypeAnnotation(expr, type_expr, _) => Expr::TypeAnnotation(expr, type_expr, new_type),
         }
     }
     
@@ -191,6 +210,15 @@ impl<T> Expr<T> {
             Expr::Set(name, value, t) => {
                 let new_value = Box::new(value.map_type(f.clone()));
                 Expr::Set(name, new_value, f(t))
+            }
+            Expr::Macro(name, params, body, t) => {
+                let new_body = Box::new(body.map_type(f.clone()));
+                Expr::Macro(name, params, new_body, f(t))
+            }
+            Expr::TypeAnnotation(expr, type_expr, t) => {
+                let new_expr = Box::new(expr.map_type(f.clone()));
+                let new_type_expr = Box::new(type_expr.map_type(f.clone()));
+                Expr::TypeAnnotation(new_expr, new_type_expr, f(t))
             }
         }
     }
@@ -366,7 +394,7 @@ pub struct TlispInterpreter {
     /// Macro registry
     macro_registry: MacroRegistry,
     /// Global environment
-    global_env: Rc<RefCell<Environment>>,
+    global_env: Arc<Mutex<Environment>>,
     /// Debug mode
     debug: bool,
 }
@@ -374,15 +402,15 @@ pub struct TlispInterpreter {
 impl TlispInterpreter {
     /// Create a new TLISP interpreter
     pub fn new() -> Self {
-        let global_env = Rc::new(RefCell::new(Environment::new()));
-        
+        let global_env = Arc::new(Mutex::new(Environment::new()));
+
         // Add built-in functions
         Self::add_builtins(&global_env);
-        
+
         TlispInterpreter {
             lexer: Lexer::new(""), // Placeholder, will be replaced per parse
             parser: Parser::new(),
-            evaluator: Evaluator::new(Rc::clone(&global_env)),
+            evaluator: Evaluator::new(Arc::clone(&global_env)),
             type_checker: DependentTypeChecker::new(),
             macro_registry: MacroRegistry::new(),
             global_env,
@@ -488,7 +516,7 @@ impl TlispInterpreter {
     /// Define a variable in the global environment
     pub fn define(&mut self, name: String, value: Value) {
         // Add to runtime environment
-        self.global_env.borrow_mut().define(name.clone(), value.clone());
+        self.global_env.lock().unwrap().define(name.clone(), value.clone());
 
         // Add to type checker environment
         let value_type = match &value {
@@ -507,10 +535,10 @@ impl TlispInterpreter {
         };
         self.type_checker.define_var(name.to_string(), value_type);
     }
-    
+
     /// Get a variable from the global environment
     pub fn get(&self, name: &str) -> Option<Value> {
-        self.global_env.borrow().get(name)
+        self.global_env.lock().unwrap().get(name)
     }
 
     /// Set debug mode
@@ -518,122 +546,42 @@ impl TlispInterpreter {
         self.debug = debug;
     }
     
-    /// Add built-in functions to the environment
-    fn add_builtins(env: &Rc<RefCell<Environment>>) {
-        let mut env = env.borrow_mut();
-        
+    /// Add built-in functions to the environment (Arc<Mutex> version)
+    fn add_builtins(env: &Arc<Mutex<Environment>>) {
+        let mut env = env.lock().unwrap();
+
         // Arithmetic
         env.define("+".to_string(), Value::Builtin("add".to_string()));
         env.define("-".to_string(), Value::Builtin("sub".to_string()));
         env.define("*".to_string(), Value::Builtin("mul".to_string()));
         env.define("/".to_string(), Value::Builtin("div".to_string()));
-        
+        env.define("%".to_string(), Value::Builtin("mod".to_string()));
+
         // Comparison
         env.define("=".to_string(), Value::Builtin("eq".to_string()));
-        env.define("eq".to_string(), Value::Builtin("eq".to_string())); // Add eq as direct function
         env.define("<".to_string(), Value::Builtin("lt".to_string()));
         env.define("<=".to_string(), Value::Builtin("le".to_string()));
         env.define(">".to_string(), Value::Builtin("gt".to_string()));
         env.define(">=".to_string(), Value::Builtin("ge".to_string()));
-        
+
         // List operations
         env.define("list".to_string(), Value::Builtin("list".to_string()));
         env.define("car".to_string(), Value::Builtin("car".to_string()));
         env.define("cdr".to_string(), Value::Builtin("cdr".to_string()));
-        env.define("head".to_string(), Value::Builtin("head".to_string()));
-        env.define("tail".to_string(), Value::Builtin("tail".to_string()));
         env.define("cons".to_string(), Value::Builtin("cons".to_string()));
-        env.define("append".to_string(), Value::Builtin("append".to_string()));
-        env.define("length".to_string(), Value::Builtin("length".to_string()));
 
-        // Control flow
-        env.define("begin".to_string(), Value::Builtin("begin".to_string()));
-        env.define("cond".to_string(), Value::Builtin("cond".to_string()));
-
-        // Boolean operations
-        env.define("and".to_string(), Value::Builtin("and".to_string()));
-        env.define("or".to_string(), Value::Builtin("or".to_string()));
-        env.define("not".to_string(), Value::Builtin("not".to_string()));
-        
         // I/O
         env.define("print".to_string(), Value::Builtin("print".to_string()));
         env.define("println".to_string(), Value::Builtin("println".to_string()));
-        env.define("newline".to_string(), Value::Builtin("newline".to_string()));
-
-        // String operations
-        env.define("string-append".to_string(), Value::Builtin("string-append".to_string()));
-        env.define("number->string".to_string(), Value::Builtin("number->string".to_string()));
-        env.define("symbol->string".to_string(), Value::Builtin("symbol->string".to_string()));
-        env.define("list->string".to_string(), Value::Builtin("list->string".to_string()));
-        env.define("pid->string".to_string(), Value::Builtin("pid->string".to_string()));
 
         // Type predicates
         env.define("null?".to_string(), Value::Builtin("null?".to_string()));
         env.define("number?".to_string(), Value::Builtin("number?".to_string()));
         env.define("string?".to_string(), Value::Builtin("string?".to_string()));
-        env.define("symbol?".to_string(), Value::Builtin("symbol?".to_string()));
-        env.define("boolean?".to_string(), Value::Builtin("boolean?".to_string()));
         env.define("list?".to_string(), Value::Builtin("list?".to_string()));
-        env.define("equal?".to_string(), Value::Builtin("equal?".to_string()));
-
-        // Math operations
-        env.define("modulo".to_string(), Value::Builtin("modulo".to_string()));
-        env.define("mod".to_string(), Value::Builtin("modulo".to_string())); // Alias for modulo
-        env.define("floor".to_string(), Value::Builtin("floor".to_string()));
-        env.define("sqrt".to_string(), Value::Builtin("sqrt".to_string()));
-        env.define("abs".to_string(), Value::Builtin("abs".to_string()));
-
-        // System functions
-        env.define("error".to_string(), Value::Builtin("error".to_string()));
-        env.define("current-time".to_string(), Value::Builtin("current-time".to_string()));
-        env.define("random".to_string(), Value::Builtin("random".to_string()));
-
-        // REAM integration
-        env.define("spawn".to_string(), Value::Builtin("spawn".to_string()));
-        env.define("send".to_string(), Value::Builtin("send".to_string()));
-        env.define("receive".to_string(), Value::Builtin("receive".to_string()));
-        env.define("self".to_string(), Value::Builtin("self".to_string()));
-
-        // P2P distributed system functions
-        // Cluster management functions
-        env.define("p2p-create-cluster".to_string(), Value::Builtin("p2p-create-cluster".to_string()));
-        env.define("p2p-join-cluster".to_string(), Value::Builtin("p2p-join-cluster".to_string()));
-        env.define("p2p-leave-cluster".to_string(), Value::Builtin("p2p-leave-cluster".to_string()));
-        env.define("p2p-cluster-info".to_string(), Value::Builtin("p2p-cluster-info".to_string()));
-        env.define("p2p-cluster-members".to_string(), Value::Builtin("p2p-cluster-members".to_string()));
-
-        // Actor management functions
-        env.define("p2p-spawn-actor".to_string(), Value::Builtin("p2p-spawn-actor".to_string()));
-        env.define("p2p-migrate-actor".to_string(), Value::Builtin("p2p-migrate-actor".to_string()));
-        env.define("p2p-send-remote".to_string(), Value::Builtin("p2p-send-remote".to_string()));
-        env.define("p2p-actor-location".to_string(), Value::Builtin("p2p-actor-location".to_string()));
-
-        // Node management functions
-        env.define("p2p-node-info".to_string(), Value::Builtin("p2p-node-info".to_string()));
-        env.define("p2p-node-health".to_string(), Value::Builtin("p2p-node-health".to_string()));
-        env.define("p2p-discover-nodes".to_string(), Value::Builtin("p2p-discover-nodes".to_string()));
-
-        // Consensus functions
-        env.define("p2p-propose".to_string(), Value::Builtin("p2p-propose".to_string()));
-        env.define("p2p-consensus-state".to_string(), Value::Builtin("p2p-consensus-state".to_string()));
-
-        // Hypervisor functions
-        env.define("hypervisor:start".to_string(), Value::Builtin("hypervisor:start".to_string()));
-        env.define("hypervisor:stop".to_string(), Value::Builtin("hypervisor:stop".to_string()));
-        env.define("hypervisor:register-actor".to_string(), Value::Builtin("hypervisor:register-actor".to_string()));
-        env.define("hypervisor:unregister-actor".to_string(), Value::Builtin("hypervisor:unregister-actor".to_string()));
-        env.define("hypervisor:get-actor-metrics".to_string(), Value::Builtin("hypervisor:get-actor-metrics".to_string()));
-        env.define("hypervisor:get-system-metrics".to_string(), Value::Builtin("hypervisor:get-system-metrics".to_string()));
-        env.define("hypervisor:list-actors".to_string(), Value::Builtin("hypervisor:list-actors".to_string()));
-        env.define("hypervisor:health-check".to_string(), Value::Builtin("hypervisor:health-check".to_string()));
-        env.define("hypervisor:set-alert-threshold".to_string(), Value::Builtin("hypervisor:set-alert-threshold".to_string()));
-        env.define("hypervisor:get-alerts".to_string(), Value::Builtin("hypervisor:get-alerts".to_string()));
-        env.define("hypervisor:restart-actor".to_string(), Value::Builtin("hypervisor:restart-actor".to_string()));
-        env.define("hypervisor:suspend-actor".to_string(), Value::Builtin("hypervisor:suspend-actor".to_string()));
-        env.define("hypervisor:resume-actor".to_string(), Value::Builtin("hypervisor:resume-actor".to_string()));
-        env.define("hypervisor:kill-actor".to_string(), Value::Builtin("hypervisor:kill-actor".to_string()));
-        env.define("hypervisor:get-supervision-tree".to_string(), Value::Builtin("hypervisor:get-supervision-tree".to_string()));
     }
+
+
 
     /// Parse TLISP source code into expressions
     pub fn parse(&mut self, input: &str) -> TlispResult<Expr<()>> {
@@ -662,17 +610,26 @@ impl TlispInterpreter {
             println!("TLISP DEBUG: Optimization level set to {}", level);
         }
     }
+
+    /// Compile an untyped expression to bytecode (public interface)
+    pub fn compile_to_bytecode_untyped(&self, expr: Expr<()>) -> BytecodeResult<BytecodeProgram> {
+        // Convert to typed expression
+        let typed_expr = self.annotate_types(expr);
+
+        // Use the LanguageCompiler trait method
+        LanguageCompiler::compile_to_bytecode(self, typed_expr)
+    }
 }
 
 impl LanguageCompiler for TlispInterpreter {
-    type AST = Expr<()>;
+    type AST = Expr<Type>;
 
-    fn compile_to_bytecode(&self, expr: Expr<()>) -> BytecodeResult<BytecodeProgram> {
-        // Create a bytecode compiler
-        let mut compiler = BytecodeCompiler::new("tlisp_expr".to_string());
+    fn compile_to_bytecode(&self, expr: Expr<Type>) -> BytecodeResult<BytecodeProgram> {
+        // Create an enhanced compiler
+        let mut compiler = EnhancedTlispCompiler::new("tlisp_expr".to_string());
 
-        // Compile the expression to bytecode
-        self.compile_expr_to_bytecode(&expr, &mut compiler)?;
+        // Compile the expression to bytecode using enhanced features
+        compiler.compile_expr(&expr)?;
 
         // Finish compilation
         compiler.finish()
@@ -692,6 +649,64 @@ impl LanguageCompiler for TlispInterpreter {
 }
 
 impl TlispInterpreter {
+    /// Convert Expr<()> to Expr<Type> by adding type annotations
+    pub fn annotate_types(&self, expr: Expr<()>) -> Expr<Type> {
+        match expr {
+            Expr::Symbol(name, _) => Expr::Symbol(name, Type::Unknown),
+            Expr::Number(n, _) => Expr::Number(n, Type::Int),
+            Expr::Float(f, _) => Expr::Float(f, Type::Float),
+            Expr::Bool(b, _) => Expr::Bool(b, Type::Bool),
+            Expr::String(s, _) => Expr::String(s, Type::String),
+            Expr::List(exprs, _) => {
+                let typed_exprs = exprs.into_iter().map(|e| self.annotate_types(e)).collect();
+                Expr::List(typed_exprs, Type::List(Box::new(Type::Unknown)))
+            },
+            Expr::Application(func, args, _) => {
+                let typed_func = Box::new(self.annotate_types(*func));
+                let typed_args = args.into_iter().map(|e| self.annotate_types(e)).collect();
+                Expr::Application(typed_func, typed_args, Type::Unknown)
+            },
+            Expr::Lambda(params, body, _) => {
+                let typed_body = Box::new(self.annotate_types(*body));
+                Expr::Lambda(params, typed_body, Type::Function(vec![Type::Unknown], Box::new(Type::Unknown)))
+            },
+            Expr::Let(bindings, body, _) => {
+                let typed_bindings = bindings.into_iter()
+                    .map(|(name, expr)| (name, self.annotate_types(expr)))
+                    .collect();
+                let typed_body = Box::new(self.annotate_types(*body));
+                Expr::Let(typed_bindings, typed_body, Type::Unknown)
+            },
+            Expr::If(cond, then_expr, else_expr, _) => {
+                let typed_cond = Box::new(self.annotate_types(*cond));
+                let typed_then = Box::new(self.annotate_types(*then_expr));
+                let typed_else = Box::new(self.annotate_types(*else_expr));
+                Expr::If(typed_cond, typed_then, typed_else, Type::Unknown)
+            },
+            Expr::Quote(expr, _) => {
+                let typed_expr = Box::new(self.annotate_types(*expr));
+                Expr::Quote(typed_expr, Type::Unknown)
+            },
+            Expr::Define(name, expr, _) => {
+                let typed_expr = Box::new(self.annotate_types(*expr));
+                Expr::Define(name, typed_expr, Type::Unit)
+            },
+            Expr::Set(name, expr, _) => {
+                let typed_expr = Box::new(self.annotate_types(*expr));
+                Expr::Set(name, typed_expr, Type::Unit)
+            },
+            Expr::Macro(name, params, body, _) => {
+                let typed_body = Box::new(self.annotate_types(*body));
+                Expr::Macro(name, params, typed_body, Type::Macro)
+            },
+            Expr::TypeAnnotation(expr, type_expr, _) => {
+                let typed_expr = Box::new(self.annotate_types(*expr));
+                let typed_type_expr = Box::new(self.annotate_types(*type_expr));
+                Expr::TypeAnnotation(typed_expr, typed_type_expr, Type::Unknown)
+            },
+        }
+    }
+
     /// Compile a single expression to bytecode
     fn compile_expr_to_bytecode(&self, expr: &Expr<()>, compiler: &mut BytecodeCompiler) -> BytecodeResult<()> {
         match expr {

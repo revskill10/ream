@@ -1,6 +1,7 @@
 //! Environment management for TLISP
 
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 use std::rc::Rc;
 use std::cell::RefCell;
 use crate::tlisp::Value;
@@ -11,7 +12,7 @@ pub struct Environment {
     /// Variable bindings
     bindings: HashMap<String, Value>,
     /// Parent environment
-    parent: Option<Rc<RefCell<Environment>>>,
+    parent: Option<Arc<Mutex<Environment>>>,
 }
 
 impl Environment {
@@ -24,7 +25,7 @@ impl Environment {
     }
     
     /// Create an environment with a parent
-    pub fn with_parent(parent: Rc<RefCell<Environment>>) -> Self {
+    pub fn with_parent(parent: Arc<Mutex<Environment>>) -> Self {
         Environment {
             bindings: HashMap::new(),
             parent: Some(parent),
@@ -35,47 +36,52 @@ impl Environment {
     pub fn define(&mut self, name: String, value: Value) {
         self.bindings.insert(name, value);
     }
+
+    /// Remove a variable from this environment
+    pub fn undefine(&mut self, name: &str) {
+        self.bindings.remove(name);
+    }
     
     /// Get a variable from this environment or parent environments
     pub fn get(&self, name: &str) -> Option<Value> {
         if let Some(value) = self.bindings.get(name) {
             Some(value.clone())
         } else if let Some(ref parent) = self.parent {
-            parent.borrow().get(name)
+            parent.lock().unwrap().get(name)
         } else {
             None
         }
     }
-    
+
     /// Set a variable in this environment or parent environments
     pub fn set(&mut self, name: &str, value: Value) -> bool {
         if self.bindings.contains_key(name) {
             self.bindings.insert(name.to_string(), value);
             true
         } else if let Some(ref parent) = self.parent {
-            parent.borrow_mut().set(name, value)
+            parent.lock().unwrap().set(name, value)
         } else {
             false
         }
     }
-    
+
     /// Get parent environment
-    pub fn parent(&self) -> Option<Rc<RefCell<Environment>>> {
-        self.parent.as_ref().map(|p| Rc::clone(p))
+    pub fn parent(&self) -> Option<Arc<Mutex<Environment>>> {
+        self.parent.as_ref().map(|p| Arc::clone(p))
     }
     
     /// Get all bindings (including parent bindings)
     pub fn all_bindings(&self) -> HashMap<String, Value> {
         let mut all = HashMap::new();
-        
+
         // Add parent bindings first
         if let Some(ref parent) = self.parent {
-            all.extend(parent.borrow().all_bindings());
+            all.extend(parent.lock().unwrap().all_bindings());
         }
-        
+
         // Add local bindings (overriding parent bindings)
         all.extend(self.bindings.clone());
-        
+
         all
     }
     
@@ -91,8 +97,8 @@ impl Environment {
     
     /// Check if variable is defined (including in parent environments)
     pub fn has(&self, name: &str) -> bool {
-        self.bindings.contains_key(name) || 
-        self.parent.as_ref().map_or(false, |p| p.borrow().has(name))
+        self.bindings.contains_key(name) ||
+        self.parent.as_ref().map_or(false, |p| p.lock().unwrap().has(name))
     }
     
     /// Remove a variable from this environment
@@ -118,19 +124,19 @@ impl Environment {
     /// Get all variable names (including parent environments)
     pub fn all_names(&self) -> Vec<String> {
         let mut names = Vec::new();
-        
+
         // Add parent names first
         if let Some(ref parent) = self.parent {
-            names.extend(parent.borrow().all_names());
+            names.extend(parent.lock().unwrap().all_names());
         }
-        
+
         // Add local names
         names.extend(self.bindings.keys().cloned());
-        
+
         // Remove duplicates
         names.sort();
         names.dedup();
-        
+
         names
     }
     
@@ -145,7 +151,7 @@ impl Environment {
         
         if let Some(ref parent) = self.parent {
             result.push_str("  parent: ");
-            result.push_str(&parent.borrow().to_string());
+            result.push_str(&parent.lock().unwrap().to_string());
         }
         
         result.push_str("}");
@@ -168,7 +174,7 @@ impl std::fmt::Display for Environment {
 /// Environment builder for creating pre-configured environments
 pub struct EnvironmentBuilder {
     bindings: HashMap<String, Value>,
-    parent: Option<Rc<RefCell<Environment>>>,
+    parent: Option<Arc<Mutex<Environment>>>,
 }
 
 impl EnvironmentBuilder {
@@ -181,7 +187,7 @@ impl EnvironmentBuilder {
     }
     
     /// Set parent environment
-    pub fn with_parent(mut self, parent: Rc<RefCell<Environment>>) -> Self {
+    pub fn with_parent(mut self, parent: Arc<Mutex<Environment>>) -> Self {
         self.parent = Some(parent);
         self
     }
@@ -299,27 +305,27 @@ mod tests {
     
     #[test]
     fn test_environment_parent() {
-        let parent = Rc::new(RefCell::new(Environment::new()));
-        parent.borrow_mut().define("x".to_string(), Value::Int(42));
-        
-        let child = Environment::with_parent(Rc::clone(&parent));
-        
+        let parent = Arc::new(Mutex::new(Environment::new()));
+        parent.lock().unwrap().define("x".to_string(), Value::Int(42));
+
+        let child = Environment::with_parent(Arc::clone(&parent));
+
         assert_eq!(child.get("x"), Some(Value::Int(42)));
         assert!(child.has("x"));
         assert!(!child.has_local("x"));
     }
-    
+
     #[test]
     fn test_environment_shadowing() {
-        let parent = Rc::new(RefCell::new(Environment::new()));
-        parent.borrow_mut().define("x".to_string(), Value::Int(42));
-        
-        let mut child = Environment::with_parent(Rc::clone(&parent));
+        let parent = Arc::new(Mutex::new(Environment::new()));
+        parent.lock().unwrap().define("x".to_string(), Value::Int(42));
+
+        let mut child = Environment::with_parent(Arc::clone(&parent));
         child.define("x".to_string(), Value::Int(24));
-        
+
         // Child should shadow parent
         assert_eq!(child.get("x"), Some(Value::Int(24)));
-        assert_eq!(parent.borrow().get("x"), Some(Value::Int(42)));
+        assert_eq!(parent.lock().unwrap().get("x"), Some(Value::Int(42)));
     }
     
     #[test]
@@ -345,14 +351,14 @@ mod tests {
     
     #[test]
     fn test_all_bindings() {
-        let parent = Rc::new(RefCell::new(Environment::new()));
-        parent.borrow_mut().define("x".to_string(), Value::Int(1));
-        parent.borrow_mut().define("y".to_string(), Value::Int(2));
-        
-        let mut child = Environment::with_parent(Rc::clone(&parent));
+        let parent = Arc::new(Mutex::new(Environment::new()));
+        parent.lock().unwrap().define("x".to_string(), Value::Int(1));
+        parent.lock().unwrap().define("y".to_string(), Value::Int(2));
+
+        let mut child = Environment::with_parent(Arc::clone(&parent));
         child.define("y".to_string(), Value::Int(3)); // Shadow parent
         child.define("z".to_string(), Value::Int(4));
-        
+
         let all = child.all_bindings();
         assert_eq!(all.get("x"), Some(&Value::Int(1)));
         assert_eq!(all.get("y"), Some(&Value::Int(3))); // Child value

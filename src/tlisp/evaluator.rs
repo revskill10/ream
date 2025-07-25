@@ -1,9 +1,8 @@
 //! TLISP evaluator with environment management
 
-use std::rc::Rc;
-use std::cell::RefCell;
+
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use crate::tlisp::{Expr, Value, Function, Type};
 use crate::tlisp::environment::Environment;
 use crate::error::{TlispError, TlispResult};
@@ -13,7 +12,7 @@ use crate::daemon::monitor::ActorMonitor;
 /// Evaluation context
 pub struct EvaluationContext {
     /// Current environment
-    pub env: Rc<RefCell<Environment>>,
+    pub env: Arc<Mutex<Environment>>,
     /// Call stack depth
     pub depth: usize,
     /// Maximum call stack depth
@@ -26,7 +25,7 @@ pub struct EvaluationContext {
 
 impl EvaluationContext {
     /// Create a new evaluation context
-    pub fn new(env: Rc<RefCell<Environment>>) -> Self {
+    pub fn new(env: Arc<Mutex<Environment>>) -> Self {
         EvaluationContext {
             env,
             depth: 0,
@@ -37,7 +36,7 @@ impl EvaluationContext {
     }
 
     /// Create a new evaluation context with runtime
-    pub fn with_runtime(env: Rc<RefCell<Environment>>, runtime: Arc<ReamRuntime>, monitor: Arc<ActorMonitor>) -> Self {
+    pub fn with_runtime(env: Arc<Mutex<Environment>>, runtime: Arc<ReamRuntime>, monitor: Arc<ActorMonitor>) -> Self {
         EvaluationContext {
             env,
             depth: 0,
@@ -57,20 +56,7 @@ impl EvaluationContext {
         self.monitor.as_ref()
     }
     
-    /// Push a new scope
-    pub fn push_scope(&mut self) -> Rc<RefCell<Environment>> {
-        let new_env = Rc::new(RefCell::new(Environment::with_parent(Rc::clone(&self.env))));
-        self.env = Rc::clone(&new_env);
-        new_env
-    }
-    
-    /// Pop the current scope
-    pub fn pop_scope(&mut self) {
-        let parent = self.env.borrow().parent();
-        if let Some(parent) = parent {
-            self.env = parent;
-        }
-    }
+
     
     /// Check call stack depth
     pub fn check_depth(&self) -> TlispResult<()> {
@@ -85,18 +71,18 @@ impl EvaluationContext {
 /// TLISP evaluator
 pub struct Evaluator {
     /// Global environment
-    global_env: Rc<RefCell<Environment>>,
+    global_env: Arc<Mutex<Environment>>,
 }
 
 impl Evaluator {
     /// Create a new evaluator
-    pub fn new(global_env: Rc<RefCell<Environment>>) -> Self {
+    pub fn new(global_env: Arc<Mutex<Environment>>) -> Self {
         Evaluator { global_env }
     }
     
     /// Evaluate an expression
     pub fn eval(&mut self, expr: &Expr<Type>) -> TlispResult<Value> {
-        let mut context = EvaluationContext::new(Rc::clone(&self.global_env));
+        let mut context = EvaluationContext::new(Arc::clone(&self.global_env));
         self.eval_with_context(expr, &mut context)
     }
 
@@ -114,7 +100,7 @@ impl Evaluator {
         }
 
         // Create a single context for all expressions
-        let mut context = EvaluationContext::new(Rc::clone(&self.global_env));
+        let mut context = EvaluationContext::new(Arc::clone(&self.global_env));
         let mut last_result = Value::Null;
 
         for expr in expressions.iter() {
@@ -127,7 +113,7 @@ impl Evaluator {
     }
 
     /// Add placeholder types to an untyped expression
-    fn add_placeholder_types(&self, expr: &Expr<()>) -> Expr<Type> {
+    pub fn add_placeholder_types(&self, expr: &Expr<()>) -> Expr<Type> {
         match expr {
             Expr::Symbol(name, _) => Expr::Symbol(name.clone(), Type::TypeVar("T".to_string())),
             Expr::Number(n, _) => Expr::Number(*n, Type::Int),
@@ -174,6 +160,15 @@ impl Evaluator {
                 let typed_expr = Box::new(self.add_placeholder_types(expr));
                 Expr::Set(name.clone(), typed_expr, Type::Unit)
             },
+            Expr::Macro(name, params, body, _) => {
+                let typed_body = Box::new(self.add_placeholder_types(body));
+                Expr::Macro(name.clone(), params.clone(), typed_body, Type::Macro)
+            },
+            Expr::TypeAnnotation(expr, type_expr, _) => {
+                let typed_expr = Box::new(self.add_placeholder_types(expr));
+                let typed_type_expr = Box::new(self.add_placeholder_types(type_expr));
+                Expr::TypeAnnotation(typed_expr, typed_type_expr, Type::TypeVar("T".to_string()))
+            },
         }
     }
     
@@ -189,7 +184,7 @@ impl Evaluator {
             Expr::String(s, _) => Ok(Value::String(s.clone())),
             
             Expr::Symbol(name, _) => {
-                context.env.borrow().get(name)
+                context.env.lock().unwrap().get(name)
                     .ok_or_else(|| TlispError::Runtime(format!("Undefined variable: {}", name)))
             }
             
@@ -200,7 +195,7 @@ impl Evaluator {
                     if let Expr::Symbol(name, _) = &items[0] {
                         // Check if this symbol resolves to a function
                         let is_function = {
-                            if let Some(value) = context.env.borrow().get(name) {
+                            if let Some(value) = context.env.lock().unwrap().get(name) {
                                 matches!(value, Value::Function(_) | Value::Builtin(_))
                             } else {
                                 false
@@ -293,25 +288,37 @@ impl Evaluator {
 
                     let final_final_value = Value::Function(final_recursive_function);
                     // Define in both the context environment and the global environment
-                    context.env.borrow_mut().define(name.clone(), final_final_value.clone());
-                    self.global_env.borrow_mut().define(name.clone(), final_final_value.clone());
+                    context.env.lock().unwrap().define(name.clone(), final_final_value.clone());
+                    self.global_env.lock().unwrap().define(name.clone(), final_final_value.clone());
                     Ok(final_final_value)
                 } else {
                     let value = self.eval_with_context(value_expr, context)?;
                     // Define in both the context environment and the global environment
-                    context.env.borrow_mut().define(name.clone(), value.clone());
-                    self.global_env.borrow_mut().define(name.clone(), value.clone());
+                    context.env.lock().unwrap().define(name.clone(), value.clone());
+                    self.global_env.lock().unwrap().define(name.clone(), value.clone());
                     Ok(value)
                 }
             }
 
             Expr::Set(name, value_expr, _) => {
                 let value = self.eval_with_context(value_expr, context)?;
-                if context.env.borrow_mut().set(name, value.clone()) {
+                if context.env.lock().unwrap().set(name, value.clone()) {
                     Ok(value)
                 } else {
                     Err(TlispError::Runtime(format!("Undefined variable: {}", name)))
                 }
+            }
+
+            Expr::Macro(name, params, body, _) => {
+                // For now, just return a placeholder value
+                // In a full implementation, this would handle macro definition
+                Ok(Value::Symbol(format!("macro:{}", name)))
+            }
+
+            Expr::TypeAnnotation(expr, _type_expr, _) => {
+                // For now, just evaluate the expression and ignore the type annotation
+                // In a full implementation, this would check the type
+                self.eval_with_context(expr, context)
             }
         };
         
@@ -353,16 +360,16 @@ impl Evaluator {
         let arg_values = arg_values?;
 
         // Create new environment with function closure
-        let func_env = Rc::new(RefCell::new(Environment::new()));
+        let func_env = Arc::new(Mutex::new(Environment::new()));
 
         // Add closure variables (this should include the function itself for recursion)
         for (name, value) in &function.env {
-            func_env.borrow_mut().define(name.clone(), value.clone());
+            func_env.lock().unwrap().define(name.clone(), value.clone());
         }
 
         // Bind parameters
         for (param, value) in function.params.iter().zip(arg_values.iter()) {
-            func_env.borrow_mut().define(param.clone(), value.clone());
+            func_env.lock().unwrap().define(param.clone(), value.clone());
         }
 
         // For recursive functions, also check the global environment for user-defined functions
@@ -381,18 +388,18 @@ impl Evaluator {
             "reverse", ">=", "import"
         ];
 
-        let global_bindings = self.global_env.borrow().all_bindings();
+        let global_bindings = self.global_env.lock().unwrap().all_bindings();
         for (name, value) in global_bindings {
             if let Value::Function(_) = value {
                 // Only add user-defined functions, not built-ins
-                if !builtin_names.contains(&name.as_str()) && !func_env.borrow().all_bindings().contains_key(&name) {
-                    func_env.borrow_mut().define(name, value);
+                if !builtin_names.contains(&name.as_str()) && !func_env.lock().unwrap().all_bindings().contains_key(&name) {
+                    func_env.lock().unwrap().define(name, value);
                 }
             }
         }
 
         // Evaluate body in function environment
-        let old_env = Rc::clone(&context.env);
+        let old_env = Arc::clone(&context.env);
         context.env = func_env;
 
         let result = self.eval_with_context(&function.body, context);
@@ -543,21 +550,32 @@ impl Evaluator {
     
     /// Evaluate let expression
     fn eval_let(&mut self, bindings: &[(String, Expr<Type>)], body: &Expr<Type>, context: &mut EvaluationContext) -> TlispResult<Value> {
-        // Create new scope
-        context.push_scope();
-        
+        // Store original bindings to restore later
+        let mut original_bindings = HashMap::new();
+
         // Evaluate and bind variables
         for (name, expr) in bindings {
             let value = self.eval_with_context(expr, context)?;
-            context.env.borrow_mut().define(name.clone(), value);
+            // Store original value if it exists
+            if let Some(original) = context.env.lock().unwrap().get(name) {
+                original_bindings.insert(name.clone(), original);
+            }
+            context.env.lock().unwrap().define(name.clone(), value);
         }
-        
+
         // Evaluate body
         let result = self.eval_with_context(body, context);
-        
-        // Pop scope
-        context.pop_scope();
-        
+
+        // Restore original bindings
+        for (name, _) in bindings {
+            if let Some(original) = original_bindings.remove(name) {
+                context.env.lock().unwrap().define(name.clone(), original);
+            } else {
+                // Remove the binding if it didn't exist before
+                context.env.lock().unwrap().undefine(name);
+            }
+        }
+
         result
     }
     
@@ -580,8 +598,8 @@ impl Evaluator {
     }
     
     /// Capture environment for closures
-    fn capture_environment(&self, env: &Rc<RefCell<Environment>>) -> HashMap<String, Value> {
-        env.borrow().all_bindings()
+    fn capture_environment(&self, env: &Arc<Mutex<Environment>>) -> HashMap<String, Value> {
+        env.lock().unwrap().all_bindings()
     }
     
     // Built-in function implementations
@@ -1394,7 +1412,7 @@ impl Evaluator {
         let new_value = self.eval_with_context(&args[1], context)?;
 
         // Set the variable in the current environment
-        let success = context.env.borrow_mut().set(&var_name, new_value.clone());
+        let success = context.env.lock().unwrap().set(&var_name, new_value.clone());
         if !success {
             return Err(TlispError::Runtime(format!("Variable '{}' not found", var_name)));
         }
@@ -1564,46 +1582,46 @@ impl Evaluator {
                 // Add module functions to environment based on module name
                 match module_name.as_str() {
                     "http-server" => {
-                        context.env.borrow_mut().define("http-server:start".to_string(), Value::Builtin("http-server:start".to_string()));
-                        context.env.borrow_mut().define("http-server:stop".to_string(), Value::Builtin("http-server:stop".to_string()));
-                        context.env.borrow_mut().define("http-server:get".to_string(), Value::Builtin("http-server:get".to_string()));
-                        context.env.borrow_mut().define("http-server:post".to_string(), Value::Builtin("http-server:post".to_string()));
-                        context.env.borrow_mut().define("http-server:put".to_string(), Value::Builtin("http-server:put".to_string()));
-                        context.env.borrow_mut().define("http-server:delete".to_string(), Value::Builtin("http-server:delete".to_string()));
-                        context.env.borrow_mut().define("http-server:send-response".to_string(), Value::Builtin("http-server:send-response".to_string()));
+                        context.env.lock().unwrap().define("http-server:start".to_string(), Value::Builtin("http-server:start".to_string()));
+                        context.env.lock().unwrap().define("http-server:stop".to_string(), Value::Builtin("http-server:stop".to_string()));
+                        context.env.lock().unwrap().define("http-server:get".to_string(), Value::Builtin("http-server:get".to_string()));
+                        context.env.lock().unwrap().define("http-server:post".to_string(), Value::Builtin("http-server:post".to_string()));
+                        context.env.lock().unwrap().define("http-server:put".to_string(), Value::Builtin("http-server:put".to_string()));
+                        context.env.lock().unwrap().define("http-server:delete".to_string(), Value::Builtin("http-server:delete".to_string()));
+                        context.env.lock().unwrap().define("http-server:send-response".to_string(), Value::Builtin("http-server:send-response".to_string()));
                     }
                     "json" => {
-                        context.env.borrow_mut().define("json:parse".to_string(), Value::Builtin("json:parse".to_string()));
-                        context.env.borrow_mut().define("json:stringify".to_string(), Value::Builtin("json:stringify".to_string()));
-                        context.env.borrow_mut().define("json:get".to_string(), Value::Builtin("json:get".to_string()));
-                        context.env.borrow_mut().define("json:set!".to_string(), Value::Builtin("json:set!".to_string()));
-                        context.env.borrow_mut().define("json:object".to_string(), Value::Builtin("json:object".to_string()));
+                        context.env.lock().unwrap().define("json:parse".to_string(), Value::Builtin("json:parse".to_string()));
+                        context.env.lock().unwrap().define("json:stringify".to_string(), Value::Builtin("json:stringify".to_string()));
+                        context.env.lock().unwrap().define("json:get".to_string(), Value::Builtin("json:get".to_string()));
+                        context.env.lock().unwrap().define("json:set!".to_string(), Value::Builtin("json:set!".to_string()));
+                        context.env.lock().unwrap().define("json:object".to_string(), Value::Builtin("json:object".to_string()));
                     }
                     "async-utils" => {
-                        context.env.borrow_mut().define("async-utils:now".to_string(), Value::Builtin("async-utils:now".to_string()));
-                        context.env.borrow_mut().define("async-utils:timestamp-ms".to_string(), Value::Builtin("async-utils:timestamp-ms".to_string()));
-                        context.env.borrow_mut().define("async-utils:format-time".to_string(), Value::Builtin("async-utils:format-time".to_string()));
-                        context.env.borrow_mut().define("async-utils:sleep".to_string(), Value::Builtin("async-utils:sleep".to_string()));
-                        context.env.borrow_mut().define("async-utils:timestamp-iso".to_string(), Value::Builtin("async-utils:timestamp-iso".to_string()));
+                        context.env.lock().unwrap().define("async-utils:now".to_string(), Value::Builtin("async-utils:now".to_string()));
+                        context.env.lock().unwrap().define("async-utils:timestamp-ms".to_string(), Value::Builtin("async-utils:timestamp-ms".to_string()));
+                        context.env.lock().unwrap().define("async-utils:format-time".to_string(), Value::Builtin("async-utils:format-time".to_string()));
+                        context.env.lock().unwrap().define("async-utils:sleep".to_string(), Value::Builtin("async-utils:sleep".to_string()));
+                        context.env.lock().unwrap().define("async-utils:timestamp-iso".to_string(), Value::Builtin("async-utils:timestamp-iso".to_string()));
                     }
                     "ream-orm" => {
-                        context.env.borrow_mut().define("ream-orm:connect".to_string(), Value::Builtin("ream-orm:connect".to_string()));
-                        context.env.borrow_mut().define("ream-orm:disconnect".to_string(), Value::Builtin("ream-orm:disconnect".to_string()));
-                        context.env.borrow_mut().define("ream-orm:execute".to_string(), Value::Builtin("ream-orm:execute".to_string()));
-                        context.env.borrow_mut().define("ream-orm:execute-query".to_string(), Value::Builtin("ream-orm:execute-query".to_string()));
-                        context.env.borrow_mut().define("ream-orm:execute-query-single".to_string(), Value::Builtin("ream-orm:execute-query-single".to_string()));
-                        context.env.borrow_mut().define("ream-orm:execute-mutation".to_string(), Value::Builtin("ream-orm:execute-mutation".to_string()));
-                        context.env.borrow_mut().define("ream-orm:create-query-builder".to_string(), Value::Builtin("ream-orm:create-query-builder".to_string()));
-                        context.env.borrow_mut().define("ream-orm:select".to_string(), Value::Builtin("ream-orm:select".to_string()));
-                        context.env.borrow_mut().define("ream-orm:create-mutation-builder".to_string(), Value::Builtin("ream-orm:create-mutation-builder".to_string()));
-                        context.env.borrow_mut().define("ream-orm:get-schema-info".to_string(), Value::Builtin("ream-orm:get-schema-info".to_string()));
+                        context.env.lock().unwrap().define("ream-orm:connect".to_string(), Value::Builtin("ream-orm:connect".to_string()));
+                        context.env.lock().unwrap().define("ream-orm:disconnect".to_string(), Value::Builtin("ream-orm:disconnect".to_string()));
+                        context.env.lock().unwrap().define("ream-orm:execute".to_string(), Value::Builtin("ream-orm:execute".to_string()));
+                        context.env.lock().unwrap().define("ream-orm:execute-query".to_string(), Value::Builtin("ream-orm:execute-query".to_string()));
+                        context.env.lock().unwrap().define("ream-orm:execute-query-single".to_string(), Value::Builtin("ream-orm:execute-query-single".to_string()));
+                        context.env.lock().unwrap().define("ream-orm:execute-mutation".to_string(), Value::Builtin("ream-orm:execute-mutation".to_string()));
+                        context.env.lock().unwrap().define("ream-orm:create-query-builder".to_string(), Value::Builtin("ream-orm:create-query-builder".to_string()));
+                        context.env.lock().unwrap().define("ream-orm:select".to_string(), Value::Builtin("ream-orm:select".to_string()));
+                        context.env.lock().unwrap().define("ream-orm:create-mutation-builder".to_string(), Value::Builtin("ream-orm:create-mutation-builder".to_string()));
+                        context.env.lock().unwrap().define("ream-orm:get-schema-info".to_string(), Value::Builtin("ream-orm:get-schema-info".to_string()));
                     }
                     "ream-graphql" => {
-                        context.env.borrow_mut().define("ream-graphql:create-context".to_string(), Value::Builtin("ream-graphql:create-context".to_string()));
-                        context.env.borrow_mut().define("ream-graphql:parse-query".to_string(), Value::Builtin("ream-graphql:parse-query".to_string()));
-                        context.env.borrow_mut().define("ream-graphql:parse-mutation".to_string(), Value::Builtin("ream-graphql:parse-mutation".to_string()));
-                        context.env.borrow_mut().define("ream-graphql:compile-query".to_string(), Value::Builtin("ream-graphql:compile-query".to_string()));
-                        context.env.borrow_mut().define("ream-graphql:compile-mutation".to_string(), Value::Builtin("ream-graphql:compile-mutation".to_string()));
+                        context.env.lock().unwrap().define("ream-graphql:create-context".to_string(), Value::Builtin("ream-graphql:create-context".to_string()));
+                        context.env.lock().unwrap().define("ream-graphql:parse-query".to_string(), Value::Builtin("ream-graphql:parse-query".to_string()));
+                        context.env.lock().unwrap().define("ream-graphql:parse-mutation".to_string(), Value::Builtin("ream-graphql:parse-mutation".to_string()));
+                        context.env.lock().unwrap().define("ream-graphql:compile-query".to_string(), Value::Builtin("ream-graphql:compile-query".to_string()));
+                        context.env.lock().unwrap().define("ream-graphql:compile-mutation".to_string(), Value::Builtin("ream-graphql:compile-mutation".to_string()));
                     }
                     _ => {
                         return Err(TlispError::Runtime(format!("Unknown module: {}", module_name)));
@@ -2210,19 +2228,19 @@ mod tests {
 
     #[test]
     fn test_evaluator_basic() {
-        let env = Rc::new(RefCell::new(Environment::new()));
+        let env = Arc::new(Mutex::new(Environment::new()));
         let mut evaluator = Evaluator::new(env);
-        
+
         let expr = Expr::Number(42, Type::Int);
         let result = evaluator.eval(&expr).unwrap();
-        
+
         assert_eq!(result, Value::Int(42));
     }
-    
+
     #[test]
     fn test_arithmetic() {
-        let env = Rc::new(RefCell::new(Environment::new()));
-        env.borrow_mut().define("+".to_string(), Value::Builtin("add".to_string()));
+        let env = Arc::new(Mutex::new(Environment::new()));
+        env.lock().unwrap().define("+".to_string(), Value::Builtin("add".to_string()));
 
         let mut evaluator = Evaluator::new(env);
 

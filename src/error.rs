@@ -75,6 +75,10 @@ pub enum RuntimeError {
     #[error("Supervision error: {0}")]
     Supervision(String),
 
+    /// Actor error
+    #[error("Actor error: {0}")]
+    ActorError(String),
+
     /// Serverless error
     #[error("Serverless error: {0}")]
     Serverless(String),
@@ -98,6 +102,16 @@ pub enum RuntimeError {
     /// Serialization error
     #[error("Serialization error: {0}")]
     SerializationError(String),
+
+    /// Message delivery error
+    #[error("Message delivery error: {0}")]
+    MessageDelivery(String),
+}
+
+impl From<std::io::Error> for RuntimeError {
+    fn from(err: std::io::Error) -> Self {
+        RuntimeError::RuntimeError(err.to_string())
+    }
 }
 
 /// Bytecode compilation errors
@@ -131,6 +145,30 @@ pub enum BytecodeError {
     /// No bridge available
     #[error("No bridge available for language: {0}")]
     NoBridge(String),
+
+    /// Security violation
+    #[error("Security violation: {0}")]
+    SecurityViolation(String),
+
+    /// Resource limit exceeded
+    #[error("Resource limit exceeded: {0}")]
+    ResourceLimitExceeded(String),
+
+    /// Execution time exceeded
+    #[error("Execution time exceeded: {0:?}")]
+    ExecutionTimeExceeded(std::time::Duration),
+
+    /// Instruction limit exceeded
+    #[error("Instruction limit exceeded: {0}")]
+    InstructionLimitExceeded(u64),
+
+    /// Stack overflow
+    #[error("Stack overflow: depth {0}")]
+    StackOverflow(usize),
+
+    /// Verification failed
+    #[error("Bytecode verification failed: {0}")]
+    Verification(String),
 }
 
 /// JIT compilation errors
@@ -171,7 +209,19 @@ pub enum TlispError {
     /// Runtime errors
     #[error("Runtime error: {0}")]
     Runtime(String),
-    
+
+    /// Security errors
+    #[error("Security error: {0}")]
+    SecurityError(String),
+
+    /// Resource errors
+    #[error("Resource error: {0}")]
+    ResourceError(String),
+
+    /// Compilation errors
+    #[error("Compilation error: {0}")]
+    CompilationError(String),
+
     /// Macro expansion errors
     #[error("Macro error: {0}")]
     Macro(#[from] MacroError),

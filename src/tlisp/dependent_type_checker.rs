@@ -393,6 +393,18 @@ impl DependentTypeChecker {
             Expr::Set(name, value_expr, _) => {
                 self.infer_set_type(name, value_expr)
             }
+
+            Expr::Macro(name, params, body, _) => {
+                // For now, just return Macro type
+                // In a full implementation, this would handle macro expansion
+                Ok(Type::Macro)
+            }
+
+            Expr::TypeAnnotation(expr, type_expr, _) => {
+                // For now, just infer the expression type
+                // In a full implementation, this would check the annotation
+                self.infer_type_internal(expr)
+            }
         }
     }
 

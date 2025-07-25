@@ -357,7 +357,7 @@ impl DaemonManager {
     }
     
     /// Get all actors
-    pub fn list_actors(&self, detailed: bool) -> Vec<ActorInfo> {
+    pub fn list_actors(&self, _detailed: bool) -> Vec<ActorInfo> {
         let actors = self.actors.read().unwrap();
         actors.values().cloned().collect()
     }

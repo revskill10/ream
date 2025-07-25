@@ -227,7 +227,7 @@ fn execute_build(path: PathBuf, output: PathBuf, mode: BuildMode, optimization: 
             println!("  ✓ Syntax valid");
 
             // Compile to bytecode
-            match interpreter.compile_to_bytecode(expr) {
+            match interpreter.compile_to_bytecode_untyped(expr) {
                 Ok(program) => {
                     println!("  ✓ Bytecode compilation successful ({} instructions)", program.instructions.len());
 

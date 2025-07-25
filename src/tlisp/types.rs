@@ -75,6 +75,10 @@ pub enum Type {
     List(Box<Type>),
     /// Function type: (param_types) -> return_type
     Function(Vec<Type>, Box<Type>),
+    /// Unknown type (for inference)
+    Unknown,
+    /// Macro type
+    Macro,
 
     // NEW: Dependent types
     /// Dependent function: (x: A) -> B(x)
@@ -346,7 +350,8 @@ impl Type {
     pub fn kind(&self) -> Kind {
         match self {
             Type::TypeVar(_) | Type::Int | Type::Float | Type::Bool |
-            Type::String | Type::Symbol | Type::Unit | Type::Pid => Kind::Type,
+            Type::String | Type::Symbol | Type::Unit | Type::Pid |
+            Type::Unknown | Type::Macro => Kind::Type,
 
             Type::List(_) | Type::Function(_, _) | Type::DepFunction { .. } => Kind::Type,
 
@@ -442,6 +447,8 @@ impl std::fmt::Display for Type {
             Type::Effect(eff) => {
                 write!(f, "Effect({:?})", eff)
             }
+            Type::Unknown => write!(f, "Unknown"),
+            Type::Macro => write!(f, "Macro"),
         }
     }
 }

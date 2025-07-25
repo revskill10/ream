@@ -15,6 +15,11 @@ pub mod bounded_execution;
 pub mod advanced_runtime;
 pub mod serverless;
 pub mod serverless_runtime;
+pub mod preemption;
+pub mod executor;
+pub mod work_stealing;
+pub mod realtime;
+pub mod resource_manager;
 
 
 use std::sync::{Arc, RwLock};
@@ -34,6 +39,11 @@ pub use memory::{GarbageCollector, MemoryManager};
 pub use message::{MessageRouter, Mailbox};
 pub use supervisor::{Supervisor, ProcessTree};
 pub use process::{Process, ProcessHandle};
+pub use preemption::{PreemptionTimer, ExecutionResult, PreemptionStats};
+pub use executor::{ProcessExecutor, ExecutorStats};
+pub use work_stealing::{WorkStealingScheduler, ScheduledTask, WorkStealingStats};
+pub use realtime::{RealTimeScheduler, RealTimeTask, SchedulingAlgorithm, TaskType, RealTimeStats, ResourceId};
+pub use resource_manager::{ResourceManager, ProcessResourceUsage, ResourceQuotas, ResourceAccounting, LoadBalanceRecommendation, LoadBalanceReason, CoreLoad, LoadBalancingStrategy};
 
 /// Runtime configuration for macros
 #[derive(Debug, Clone)]
@@ -84,7 +94,7 @@ pub struct ReamRuntime {
     
     /// Shutdown signal
     shutdown_tx: Sender<()>,
-    shutdown_rx: Receiver<()>,
+    shutdown_rx: Arc<Mutex<Receiver<()>>>,
     
     /// Runtime start time
     start_time: Instant,
@@ -124,7 +134,7 @@ impl ReamRuntime {
                 gc_collections: 0,
             })),
             shutdown_tx,
-            shutdown_rx,
+            shutdown_rx: Arc::new(Mutex::new(shutdown_rx)),
             start_time: Instant::now(),
             running: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             hypervisor: None,
@@ -132,23 +142,30 @@ impl ReamRuntime {
         
         runtime
     }
-    
+}
+
+// Safety: ReamRuntime contains thread-safe components (Arc, Mutex, etc.)
+// and JitFunction which we've already marked as Send
+unsafe impl Send for ReamRuntime {}
+unsafe impl Sync for ReamRuntime {}
+
+impl ReamRuntime {
     /// Start the runtime
     pub fn start(&self) -> RuntimeResult<()> {
         self.running.store(true, std::sync::atomic::Ordering::SeqCst);
-        
-        // Start scheduler thread
-        self.start_scheduler()?;
-        
+
+        // Start scheduler with preemption
+        self.start_preemptive_scheduler()?;
+
         // Start message router
         self.message_router.start()?;
-        
+
         // Start garbage collector
         self.start_gc()?;
-        
+
         // Start statistics collector
         self.start_stats_collector()?;
-        
+
         Ok(())
     }
 
@@ -328,33 +345,73 @@ impl ReamRuntime {
     
     // Private helper methods
     
-    fn start_scheduler(&self) -> RuntimeResult<()> {
+    fn start_preemptive_scheduler(&self) -> RuntimeResult<()> {
+        // Start the scheduler's preemption timer
+        self.scheduler.lock().start()?;
+
         let scheduler = Arc::clone(&self.scheduler);
         let processes = Arc::clone(&self.processes);
         let running = Arc::clone(&self.running);
-        let shutdown_rx = self.shutdown_rx.clone();
-        
+        let shutdown_rx = Arc::clone(&self.shutdown_rx);
+
         std::thread::spawn(move || {
             while running.load(std::sync::atomic::Ordering::SeqCst) {
                 // Check for shutdown signal
-                if shutdown_rx.try_recv().is_ok() {
-                    break;
+                {
+                    let rx = shutdown_rx.lock();
+                    if rx.try_recv().is_ok() {
+                        break;
+                    }
                 }
-                
+
                 // Get next process to run
                 if let Some(pid) = scheduler.lock().next_process() {
                     if let Some(handle) = processes.get(&pid) {
-                        // Execute process quantum
-                        let _ = handle.run_quantum();
+                        // Execute process with preemptive scheduling
+                        match scheduler.lock().execute_process_preemptive(&handle) {
+                            Ok(result) => {
+                                // Handle execution result
+                                match result {
+                                    crate::runtime::preemption::ExecutionResult::Preempted { .. } => {
+                                        // Process was preempted, it will be rescheduled automatically
+                                    }
+                                    crate::runtime::preemption::ExecutionResult::Terminated { .. } => {
+                                        // Process terminated, remove from scheduler
+                                        scheduler.lock().remove(pid);
+                                        processes.remove(&pid);
+                                    }
+                                    crate::runtime::preemption::ExecutionResult::Blocked { .. } => {
+                                        // Process is blocked, suspend it
+                                        scheduler.lock().suspend(pid);
+                                    }
+                                    _ => {
+                                        // Other results (yielded, message limit) - process will be rescheduled
+                                    }
+                                }
+                            }
+                            Err(_) => {
+                                // Execution error, remove problematic process
+                                scheduler.lock().remove(pid);
+                                processes.remove(&pid);
+                            }
+                        }
                     }
                 }
-                
-                // Small yield to prevent busy waiting
-                std::thread::sleep(Duration::from_micros(10));
+
+                // Smaller yield for better responsiveness
+                std::thread::sleep(Duration::from_micros(1));
             }
+
+            // Stop scheduler on shutdown
+            scheduler.lock().stop();
         });
-        
+
         Ok(())
+    }
+
+    // Keep the old method for compatibility
+    fn start_scheduler(&self) -> RuntimeResult<()> {
+        self.start_preemptive_scheduler()
     }
     
     fn start_gc(&self) -> RuntimeResult<()> {

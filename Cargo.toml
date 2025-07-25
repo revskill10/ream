@@ -10,7 +10,7 @@ repository = "https://github.com/ream-lang/ream"
 [dependencies]
 # Core dependencies
 tokio = { version = "1.0", features = ["full"] }
-num_cpus = "1.0"
+num_cpus = "1.16"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 toml = "0.8"
@@ -36,6 +36,7 @@ crossbeam = "0.8"
 crossbeam-channel = "0.5"
 parking_lot = "0.12"
 dashmap = "5.0"
+rand = "0.8"
 
 # Memory management
 bumpalo = "3.0"
@@ -71,16 +72,6 @@ rustyline = "12.0"
 # Package manager dependencies
 dirs = "5.0"
 env_logger = "0.10"
-raft = "0.7"
-chacha20poly1305 = "0.10"
-aes-gcm = "0.10"
-argon2 = "0.5"
-ring = "0.17"
-zeroize = { version = "1.7", features = ["derive"] }
-prost = "0.12"
-lz4_flex = "0.11"
-rand = "0.8"
-zstd = "0.13"
 
 # Database and ORM dependencies
 rusqlite = { version = "0.29", features = ["bundled"] }
@@ -96,18 +87,6 @@ graphql-parser = "0.4"  # For GraphQL query parsing
 async-graphql = { version = "7.0", features = ["chrono", "uuid"] }  # GraphQL schema and execution
 async-graphql-parser = "7.0"  # GraphQL query parsing utilities
 
-# Daemon and IPC dependencies (Unix only)
-[target.'cfg(unix)'.dependencies]
-daemonize = "0.5"
-nix = { version = "0.27", features = ["signal", "process"] }
-
-# Utilities
-lazy_static = "1.4"
-once_cell = "1.19"
-tracing = { version = "0.1", optional = true }
-tracing-subscriber = { version = "0.3", optional = true }
-libc = "0.2"
-
 # Security and cryptography dependencies
 raft = "0.7"
 chacha20poly1305 = "0.10"
@@ -118,6 +97,17 @@ zeroize = { version = "1.7", features = ["derive"] }
 prost = "0.12"
 lz4_flex = "0.11"
 zstd = "0.13"
+
+# Utilities
+lazy_static = "1.4"
+once_cell = "1.19"
+tracing = { version = "0.1", optional = true }
+tracing-subscriber = { version = "0.3", optional = true }
+
+# Daemon and IPC dependencies (Unix only)
+[target.'cfg(unix)'.dependencies]
+daemonize = "0.5"
+nix = { version = "0.27", features = ["signal", "process"] }
 
 # Platform-specific dependencies
 [target.'cfg(windows)'.dependencies]
@@ -169,6 +159,10 @@ tui = []
 [[example]]
 name = "fibonacci"
 path = "examples/fibonacci.rs"
+
+[[example]]
+name = "production_tlisp_demo"
+path = "examples/production_tlisp_demo.rs"
 
 [profile.release]
 opt-level = 3

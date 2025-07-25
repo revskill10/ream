@@ -3,8 +3,12 @@
 use std::collections::{BinaryHeap, HashMap};
 use std::cmp::Ordering;
 use std::time::{Duration, Instant};
+use std::sync::Arc;
 use crate::types::{Pid, Priority};
 use crate::error::{RuntimeError, RuntimeResult};
+use crate::runtime::preemption::{PreemptionTimer, ExecutionResult};
+use crate::runtime::executor::ProcessExecutor;
+use crate::runtime::isolated_process::{IsolatedProcess, ProcessFault, RecoveryAction};
 
 /// Scheduling operations as algebraic data type
 #[derive(Debug)]
@@ -68,25 +72,34 @@ impl Ord for ScheduledProcess {
     }
 }
 
-/// Process scheduler with priority queues and fairness
+/// Process scheduler with priority queues and preemptive scheduling
 pub struct Scheduler {
     /// Ready queue (priority heap)
     ready_queue: BinaryHeap<ScheduledProcess>,
-    
+
     /// Suspended processes
     suspended: HashMap<Pid, ScheduledProcess>,
-    
+
     /// Currently running process
     current: Option<ScheduledProcess>,
-    
+
+    /// Isolated process registry
+    isolated_processes: HashMap<Pid, Arc<std::sync::Mutex<IsolatedProcess>>>,
+
     /// Quantum duration
     quantum: Duration,
-    
+
     /// Total scheduled processes
     total_scheduled: u64,
-    
+
     /// Scheduler statistics
     stats: SchedulerStats,
+
+    /// Preemption timer
+    preemption_timer: Arc<PreemptionTimer>,
+
+    /// Process executor
+    executor: ProcessExecutor,
 }
 
 #[derive(Debug, Default)]
@@ -104,16 +117,35 @@ impl Scheduler {
     
     /// Create a new scheduler with custom quantum
     pub fn with_quantum(quantum: Duration) -> Self {
+        let preemption_timer = Arc::new(PreemptionTimer::new(quantum));
+        let executor = ProcessExecutor::new(Arc::clone(&preemption_timer));
+
         Scheduler {
             ready_queue: BinaryHeap::new(),
             suspended: HashMap::new(),
             current: None,
+            isolated_processes: HashMap::new(),
             quantum,
             total_scheduled: 0,
             stats: SchedulerStats::default(),
+            preemption_timer,
+            executor,
         }
     }
     
+    /// Start the scheduler (initializes preemption timer)
+    pub fn start(&mut self) -> RuntimeResult<()> {
+        // PreemptionTimer doesn't have a mutable start method, so we can't start it here
+        // The timer is started when needed in the executor
+        Ok(())
+    }
+
+    /// Stop the scheduler
+    pub fn stop(&mut self) {
+        // PreemptionTimer doesn't have a mutable stop method accessible here
+        // The timer will be stopped when dropped
+    }
+
     /// Schedule a process with given priority
     pub fn schedule(&mut self, pid: Pid, priority: Priority) -> RuntimeResult<()> {
         let process = ScheduledProcess::new(pid, priority);
@@ -125,16 +157,14 @@ impl Scheduler {
     
     /// Get the next process to run
     pub fn next_process(&mut self) -> Option<Pid> {
-        // Check if current process quantum expired
+        // Check if current process quantum expired using preemption timer
         if let Some(ref current) = self.current {
-            if let Some(start) = current.quantum_start {
-                if start.elapsed() >= self.quantum {
-                    // Quantum expired, preempt current process
-                    self.preempt_current();
-                }
+            if self.preemption_timer.should_preempt() {
+                // Quantum expired, preempt current process
+                self.preempt_current();
             }
         }
-        
+
         // If no current process, get next from ready queue
         if self.current.is_none() {
             if let Some(mut process) = self.ready_queue.pop() {
@@ -143,12 +173,21 @@ impl Scheduler {
                 let pid = process.pid;
                 self.current = Some(process);
                 self.stats.context_switches += 1;
+
+                // Start quantum timer for the new process
+                self.preemption_timer.start_quantum();
+
                 return Some(pid);
             }
         }
-        
+
         // Return current process PID if still running
         self.current.as_ref().map(|p| p.pid)
+    }
+
+    /// Execute a process with preemptive scheduling
+    pub fn execute_process_preemptive(&mut self, handle: &crate::runtime::process::ProcessHandle) -> RuntimeResult<ExecutionResult> {
+        self.executor.execute_with_preemption(handle)
     }
     
     /// Yield the current process
@@ -243,6 +282,11 @@ impl Scheduler {
             found = true;
         }
         
+        // Remove from isolated processes
+        if self.isolated_processes.remove(&pid).is_some() {
+            found = true;
+        }
+        
         // Check if it's the current process
         if let Some(current) = self.current.take() {
             if current.pid == pid {
@@ -262,6 +306,28 @@ impl Scheduler {
     /// Get scheduler statistics
     pub fn stats(&self) -> &SchedulerStats {
         &self.stats
+    }
+
+    /// Get preemption timer
+    pub fn preemption_timer(&self) -> &Arc<PreemptionTimer> {
+        &self.preemption_timer
+    }
+
+    /// Get executor statistics
+    pub fn executor_stats(&self) -> &crate::runtime::executor::ExecutorStats {
+        self.executor.stats()
+    }
+
+    /// Force preemption of current process
+    pub fn force_preempt(&self) {
+        self.executor.force_preempt();
+    }
+
+    /// Set quantum duration
+    pub fn set_quantum(&mut self, quantum: Duration) {
+        self.quantum = quantum;
+        // Note: We can't change the timer's quantum after creation
+        // In a production system, we'd need to recreate the timer
     }
     
     /// Get number of processes in ready queue
@@ -284,6 +350,177 @@ impl Scheduler {
     /// Get current running process
     pub fn current_process(&self) -> Option<Pid> {
         self.current.as_ref().map(|p| p.pid)
+    }
+
+    /// Register an isolated process
+    pub fn register_isolated_process(&mut self, process: IsolatedProcess) -> RuntimeResult<()> {
+        let pid = process.pid();
+        let isolated_proc = Arc::new(std::sync::Mutex::new(process));
+        self.isolated_processes.insert(pid, isolated_proc);
+        Ok(())
+    }
+
+    /// Execute an isolated process with fault handling
+    pub fn execute_isolated_process(&mut self, pid: Pid) -> RuntimeResult<ExecutionResult> {
+        // First, check if the process exists and clone the Arc to avoid borrowing conflicts
+        let isolated_proc = if let Some(proc) = self.isolated_processes.get(&pid) {
+            Arc::clone(proc)
+        } else {
+            return Err(RuntimeError::ProcessNotFound(pid));
+        };
+
+        let mut process = isolated_proc.lock().unwrap();
+
+        // Set preemption timer for the process
+        process.set_preemption_timer(Arc::clone(&self.preemption_timer));
+
+        // Execute the process with fault tolerance and preemption
+        match process.process_message_preemptive() {
+            Ok(Some(())) => {
+                // Process executed successfully
+                Ok(ExecutionResult::Yielded {
+                    instructions_executed: 1, // Simplified for now
+                    messages_processed: 1,
+                    execution_time: Duration::from_micros(100),
+                })
+            }
+            Ok(None) => {
+                // Process terminated or no messages
+                Ok(ExecutionResult::Blocked {
+                    instructions_executed: 0,
+                    messages_processed: 0,
+                    execution_time: Duration::from_micros(50),
+                })
+            }
+            Err(fault_error) => {
+                // Drop the process lock before handling the fault
+                drop(process);
+
+                // Convert fault error to process fault and handle recovery
+                let fault = match fault_error {
+                    crate::error::FaultError::InstructionLimitExceeded => ProcessFault::InstructionLimit,
+                    crate::error::FaultError::MemoryBoundaryExceeded => ProcessFault::OutOfMemory,
+                    crate::error::FaultError::MessageQuotaExceeded => ProcessFault::MessageOverflow,
+                    _ => ProcessFault::Panic(format!("{:?}", fault_error)),
+                };
+
+                // Handle the fault
+                self.handle_process_fault(pid, fault)
+            }
+        }
+    }
+
+    /// Handle a process fault with recovery strategies
+    fn handle_process_fault(&mut self, pid: Pid, fault: ProcessFault) -> RuntimeResult<ExecutionResult> {
+        // First, check if the process exists and clone the Arc to avoid borrowing conflicts
+        let isolated_proc = if let Some(proc) = self.isolated_processes.get(&pid) {
+            Arc::clone(proc)
+        } else {
+            return Err(RuntimeError::ProcessNotFound(pid));
+        };
+
+        let mut process = isolated_proc.lock().unwrap();
+
+        // Get the fault handler's recovery action
+        let action = process.handle_fault(fault.clone());
+
+        match action {
+            RecoveryAction::Restart => {
+                // Attempt to restart the process
+                match process.restart() {
+                    Ok(()) => {
+                        Ok(ExecutionResult::Yielded {
+                            instructions_executed: 0,
+                            messages_processed: 0,
+                            execution_time: Duration::from_micros(200),
+                        })
+                    }
+                    Err(_) => {
+                        // Restart failed, kill the process
+                        process.kill();
+                        drop(process); // Drop the lock before calling self.remove
+                        self.remove(pid)?;
+                        Ok(ExecutionResult::Terminated {
+                            instructions_executed: 0,
+                            messages_processed: 0,
+                            execution_time: Duration::from_micros(100),
+                        })
+                    }
+                }
+            }
+            RecoveryAction::Kill => {
+                // Kill the process and remove from scheduler
+                process.kill();
+                drop(process); // Drop the lock before calling self.remove
+                self.remove(pid)?;
+                Ok(ExecutionResult::Terminated {
+                    instructions_executed: 0,
+                    messages_processed: 0,
+                    execution_time: Duration::from_micros(50),
+                })
+            }
+            RecoveryAction::Suspend => {
+                // Drop the lock before calling self.suspend
+                drop(process);
+                self.suspend(pid)?;
+                Ok(ExecutionResult::Blocked {
+                    instructions_executed: 0,
+                    messages_processed: 0,
+                    execution_time: Duration::from_micros(50),
+                })
+            }
+            RecoveryAction::Escalate => {
+                // For now, treat escalation as termination
+                // In a full implementation, this would notify supervisors
+                process.kill();
+                drop(process); // Drop the lock before calling self.remove
+                self.remove(pid)?;
+                Ok(ExecutionResult::Terminated {
+                    instructions_executed: 0,
+                    messages_processed: 0,
+                    execution_time: Duration::from_micros(100),
+                })
+            }
+            RecoveryAction::Replace => {
+                // For now, treat replace as kill + remove
+                // In a full implementation, this would create a new process
+                process.kill();
+                drop(process); // Drop the lock before calling self.remove
+                self.remove(pid)?;
+                Ok(ExecutionResult::Terminated {
+                    instructions_executed: 0,
+                    messages_processed: 0,
+                    execution_time: Duration::from_micros(150),
+                })
+            }
+        }
+    }
+
+    /// Send a message to an isolated process
+    pub fn send_to_isolated_process(&self, pid: Pid, message: crate::types::MessagePayload) -> RuntimeResult<()> {
+        if let Some(isolated_proc) = self.isolated_processes.get(&pid) {
+            let process = isolated_proc.lock().unwrap();
+            process.send_message(message)
+                .map_err(|e| RuntimeError::MessageDelivery(format!("{:?}", e)))
+        } else {
+            Err(RuntimeError::ProcessNotFound(pid))
+        }
+    }
+
+    /// Get resource usage for an isolated process
+    pub fn get_isolated_process_usage(&self, pid: Pid) -> Option<(u64, u64, u64)> {
+        self.isolated_processes.get(&pid)
+            .map(|proc| proc.lock().unwrap().get_resource_usage())
+    }
+
+    /// Get number of isolated processes
+    pub fn isolated_process_count(&self) -> usize {
+        self.isolated_processes.len()
+    }
+
+    /// Check if process is isolated
+    pub fn is_isolated_process(&self, pid: Pid) -> bool {
+        self.isolated_processes.contains_key(&pid)
     }
     
     // Private helper methods

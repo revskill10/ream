@@ -15,7 +15,7 @@ pub use optimization::{HotSpotOptimizer, PerformanceMonitor};
 pub use runtime::JitRuntime;
 
 /// JIT-compiled function handle
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct JitFunction {
     /// Function pointer
     function_ptr: *const u8,
@@ -25,6 +25,24 @@ pub struct JitFunction {
     effect_grade: EffectGrade,
     /// Compilation metadata
     metadata: JitMetadata,
+}
+
+// Safety: JitFunction contains a function pointer that points to executable code.
+// The code is immutable once compiled and the pointer remains valid for the lifetime
+// of the JitFunction. It's safe to send between threads as long as the underlying
+// memory is not freed.
+unsafe impl Send for JitFunction {}
+unsafe impl Sync for JitFunction {}
+
+impl Clone for JitFunction {
+    fn clone(&self) -> Self {
+        JitFunction {
+            function_ptr: self.function_ptr,
+            size: self.size,
+            effect_grade: self.effect_grade,
+            metadata: self.metadata.clone(),
+        }
+    }
 }
 
 /// JIT compilation metadata
@@ -109,9 +127,6 @@ impl JitFunction {
         !self.function_ptr.is_null() && self.size > 0
     }
 }
-
-unsafe impl Send for JitFunction {}
-unsafe impl Sync for JitFunction {}
 
 /// JIT compilation context
 pub struct JitContext {

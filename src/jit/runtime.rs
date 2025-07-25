@@ -107,6 +107,10 @@ struct JitActor {
     state: JitActorState,
 }
 
+// Safety: JitActor contains Arc<JitFunction> which we've already marked as Send/Sync
+unsafe impl Send for JitActor {}
+unsafe impl Sync for JitActor {}
+
 #[derive(Debug, Clone)]
 enum JitActorState {
     Ready,

@@ -35,7 +35,49 @@ pub enum Bytecode {
     Gt(EffectGrade),
     /// Greater than or equal comparison
     Ge(EffectGrade),
-    
+
+    // Bitwise operations
+    /// Bitwise AND
+    BitAnd(EffectGrade),
+    /// Bitwise OR
+    BitOr(EffectGrade),
+    /// Bitwise XOR
+    BitXor(EffectGrade),
+    /// Bitwise NOT
+    BitNot(EffectGrade),
+    /// Left shift
+    ShiftLeft(EffectGrade),
+    /// Right shift
+    ShiftRight(EffectGrade),
+    /// Unsigned right shift
+    UnsignedShiftRight(EffectGrade),
+
+    // Enhanced arithmetic
+    /// Combined division and modulo
+    DivRem(EffectGrade),
+    /// Absolute value
+    Abs(EffectGrade),
+    /// Negation
+    Neg(EffectGrade),
+    /// Minimum of two values
+    Min(EffectGrade),
+    /// Maximum of two values
+    Max(EffectGrade),
+    /// Square root
+    Sqrt(EffectGrade),
+    /// Power operation
+    Pow(EffectGrade),
+    /// Sine
+    Sin(EffectGrade),
+    /// Cosine
+    Cos(EffectGrade),
+    /// Tangent
+    Tan(EffectGrade),
+    /// Natural logarithm
+    Log(EffectGrade),
+    /// Exponential
+    Exp(EffectGrade),
+
     // Memory operations
     /// Load local variable
     Load(u32, EffectGrade),
@@ -66,6 +108,18 @@ pub enum Bytecode {
     /// Swap top two stack elements
     Swap(EffectGrade),
     
+    // String operations
+    /// Get string length
+    StrLen(EffectGrade),
+    /// Concatenate strings
+    StrConcat(EffectGrade),
+    /// String slice
+    StrSlice(u32, u32, EffectGrade), // start, end
+    /// String index
+    StrIndex(EffectGrade),
+    /// String split
+    StrSplit(u32, EffectGrade), // delimiter constant index
+
     // List operations
     /// Create empty list
     ListNew(EffectGrade),
@@ -77,6 +131,32 @@ pub enum Bytecode {
     ListSet(EffectGrade),
     /// Append to list
     ListAppend(EffectGrade),
+    /// Array slice
+    ArraySlice(u32, u32, EffectGrade), // start, end
+    /// Array concatenation
+    ArrayConcat(EffectGrade),
+    /// Array sort
+    ArraySort(EffectGrade),
+    /// Array map
+    ArrayMap(u32, EffectGrade), // function index
+    /// Array filter
+    ArrayFilter(u32, EffectGrade), // function index
+
+    // Map/Dictionary operations
+    /// Create empty map
+    MapNew(EffectGrade),
+    /// Get map value
+    MapGet(EffectGrade),
+    /// Put map value
+    MapPut(EffectGrade),
+    /// Remove map entry
+    MapRemove(EffectGrade),
+    /// Get map keys
+    MapKeys(EffectGrade),
+    /// Get map values
+    MapValues(EffectGrade),
+    /// Get map size
+    MapSize(EffectGrade),
     
     // Actor operations
     /// Spawn a new process
@@ -92,11 +172,99 @@ pub enum Bytecode {
     /// Get current process ID
     Self_(EffectGrade),
     
+    // Memory management operations
+    /// Allocate memory
+    Alloc(u32, EffectGrade), // size
+    /// Free memory
+    Free(EffectGrade),
+    /// Garbage collection
+    GcCollect(EffectGrade),
+    /// Garbage collection info
+    GcInfo(EffectGrade),
+    /// Weak reference
+    WeakRef(EffectGrade),
+    /// Phantom reference
+    PhantomRef(EffectGrade),
+
+    // Atomic operations
+    /// Atomic load
+    AtomicLoad(u32, EffectGrade), // memory ordering
+    /// Atomic store
+    AtomicStore(u32, EffectGrade), // memory ordering
+    /// Compare and swap
+    CompareAndSwap(u32, EffectGrade), // memory ordering
+    /// Fetch and add
+    FetchAndAdd(u32, EffectGrade), // memory ordering
+    /// Fetch and subtract
+    FetchAndSub(u32, EffectGrade), // memory ordering
+    /// Memory barrier
+    MemoryBarrier(u32, EffectGrade), // memory ordering
+    /// Fence
+    Fence(u32, EffectGrade), // memory ordering
+
     // I/O operations
     /// Print value
     Print(EffectGrade),
     /// Read input
     Read(EffectGrade),
+
+    // File I/O operations
+    /// Open file
+    FileOpen(u32, u32, EffectGrade), // path, mode
+    /// Read from file
+    FileRead(u32, EffectGrade), // size
+    /// Write to file
+    FileWrite(EffectGrade),
+    /// Close file
+    FileClose(EffectGrade),
+    /// Seek in file
+    FileSeek(u32, EffectGrade), // position
+    /// Get file status
+    FileStat(EffectGrade),
+
+    // Network I/O operations
+    /// Create socket
+    SocketCreate(u32, EffectGrade), // type
+    /// Bind socket
+    SocketBind(EffectGrade),
+    /// Connect socket
+    SocketConnect(EffectGrade),
+    /// Send data
+    SocketSend(u32, EffectGrade), // flags
+    /// Receive data
+    SocketRecv(u32, EffectGrade), // size
+    /// Close socket
+    SocketClose(EffectGrade),
+
+    // Time operations
+    /// Get current time
+    GetTime(EffectGrade),
+    /// Sleep
+    Sleep(EffectGrade),
+    /// Set timer
+    SetTimer(EffectGrade),
+    /// Cancel timer
+    CancelTimer(EffectGrade),
+
+    // Random operations
+    /// Generate random number
+    Random(EffectGrade),
+    /// Set random seed
+    RandomSeed(EffectGrade),
+    /// Generate random bytes
+    RandomBytes(u32, EffectGrade), // size
+
+    // Cryptographic operations
+    /// Hash data
+    Hash(u32, EffectGrade), // algorithm
+    /// Encrypt data
+    Encrypt(u32, EffectGrade), // algorithm
+    /// Decrypt data
+    Decrypt(u32, EffectGrade), // algorithm
+    /// Sign data
+    Sign(u32, EffectGrade), // algorithm
+    /// Verify signature
+    Verify(u32, EffectGrade), // algorithm
     
     // Type operations
     /// Get type of value
@@ -132,6 +300,27 @@ impl Bytecode {
             Bytecode::Le(effect) => *effect,
             Bytecode::Gt(effect) => *effect,
             Bytecode::Ge(effect) => *effect,
+            // Bitwise operations
+            Bytecode::BitAnd(effect) => *effect,
+            Bytecode::BitOr(effect) => *effect,
+            Bytecode::BitXor(effect) => *effect,
+            Bytecode::BitNot(effect) => *effect,
+            Bytecode::ShiftLeft(effect) => *effect,
+            Bytecode::ShiftRight(effect) => *effect,
+            Bytecode::UnsignedShiftRight(effect) => *effect,
+            // Enhanced arithmetic
+            Bytecode::DivRem(effect) => *effect,
+            Bytecode::Abs(effect) => *effect,
+            Bytecode::Neg(effect) => *effect,
+            Bytecode::Min(effect) => *effect,
+            Bytecode::Max(effect) => *effect,
+            Bytecode::Sqrt(effect) => *effect,
+            Bytecode::Pow(effect) => *effect,
+            Bytecode::Sin(effect) => *effect,
+            Bytecode::Cos(effect) => *effect,
+            Bytecode::Tan(effect) => *effect,
+            Bytecode::Log(effect) => *effect,
+            Bytecode::Exp(effect) => *effect,
             Bytecode::Load(_, effect) => *effect,
             Bytecode::Store(_, effect) => *effect,
             Bytecode::LoadGlobal(_, effect) => *effect,
@@ -144,19 +333,83 @@ impl Bytecode {
             Bytecode::Dup(effect) => *effect,
             Bytecode::Pop(effect) => *effect,
             Bytecode::Swap(effect) => *effect,
+            // String operations
+            Bytecode::StrLen(effect) => *effect,
+            Bytecode::StrConcat(effect) => *effect,
+            Bytecode::StrSlice(_, _, effect) => *effect,
+            Bytecode::StrIndex(effect) => *effect,
+            Bytecode::StrSplit(_, effect) => *effect,
             Bytecode::ListNew(effect) => *effect,
             Bytecode::ListLen(effect) => *effect,
             Bytecode::ListGet(effect) => *effect,
             Bytecode::ListSet(effect) => *effect,
             Bytecode::ListAppend(effect) => *effect,
+            // Array operations
+            Bytecode::ArraySlice(_, _, effect) => *effect,
+            Bytecode::ArrayConcat(effect) => *effect,
+            Bytecode::ArraySort(effect) => *effect,
+            Bytecode::ArrayMap(_, effect) => *effect,
+            Bytecode::ArrayFilter(_, effect) => *effect,
+            // Map operations
+            Bytecode::MapNew(effect) => *effect,
+            Bytecode::MapGet(effect) => *effect,
+            Bytecode::MapPut(effect) => *effect,
+            Bytecode::MapRemove(effect) => *effect,
+            Bytecode::MapKeys(effect) => *effect,
+            Bytecode::MapValues(effect) => *effect,
+            Bytecode::MapSize(effect) => *effect,
             Bytecode::SpawnProcess(_, effect) => *effect,
             Bytecode::SendMessage(_, _, effect) => *effect,
             Bytecode::ReceiveMessage(effect) => *effect,
             Bytecode::Link(_, effect) => *effect,
             Bytecode::Monitor(_, effect) => *effect,
             Bytecode::Self_(effect) => *effect,
+            // Memory management
+            Bytecode::Alloc(_, effect) => *effect,
+            Bytecode::Free(effect) => *effect,
+            Bytecode::GcCollect(effect) => *effect,
+            Bytecode::GcInfo(effect) => *effect,
+            Bytecode::WeakRef(effect) => *effect,
+            Bytecode::PhantomRef(effect) => *effect,
+            // Atomic operations
+            Bytecode::AtomicLoad(_, effect) => *effect,
+            Bytecode::AtomicStore(_, effect) => *effect,
+            Bytecode::CompareAndSwap(_, effect) => *effect,
+            Bytecode::FetchAndAdd(_, effect) => *effect,
+            Bytecode::FetchAndSub(_, effect) => *effect,
+            Bytecode::MemoryBarrier(_, effect) => *effect,
+            Bytecode::Fence(_, effect) => *effect,
             Bytecode::Print(effect) => *effect,
             Bytecode::Read(effect) => *effect,
+            // File I/O
+            Bytecode::FileOpen(_, _, effect) => *effect,
+            Bytecode::FileRead(_, effect) => *effect,
+            Bytecode::FileWrite(effect) => *effect,
+            Bytecode::FileClose(effect) => *effect,
+            Bytecode::FileSeek(_, effect) => *effect,
+            Bytecode::FileStat(effect) => *effect,
+            // Network I/O
+            Bytecode::SocketCreate(_, effect) => *effect,
+            Bytecode::SocketBind(effect) => *effect,
+            Bytecode::SocketConnect(effect) => *effect,
+            Bytecode::SocketSend(_, effect) => *effect,
+            Bytecode::SocketRecv(_, effect) => *effect,
+            Bytecode::SocketClose(effect) => *effect,
+            // Time operations
+            Bytecode::GetTime(effect) => *effect,
+            Bytecode::Sleep(effect) => *effect,
+            Bytecode::SetTimer(effect) => *effect,
+            Bytecode::CancelTimer(effect) => *effect,
+            // Random operations
+            Bytecode::Random(effect) => *effect,
+            Bytecode::RandomSeed(effect) => *effect,
+            Bytecode::RandomBytes(_, effect) => *effect,
+            // Cryptographic operations
+            Bytecode::Hash(_, effect) => *effect,
+            Bytecode::Encrypt(_, effect) => *effect,
+            Bytecode::Decrypt(_, effect) => *effect,
+            Bytecode::Sign(_, effect) => *effect,
+            Bytecode::Verify(_, effect) => *effect,
             Bytecode::TypeOf(effect) => *effect,
             Bytecode::Cast(_, effect) => *effect,
             Bytecode::Debug(effect) => *effect,
@@ -187,6 +440,27 @@ impl Bytecode {
             Bytecode::Le(_) => "le",
             Bytecode::Gt(_) => "gt",
             Bytecode::Ge(_) => "ge",
+            // Bitwise operations
+            Bytecode::BitAnd(_) => "bit_and",
+            Bytecode::BitOr(_) => "bit_or",
+            Bytecode::BitXor(_) => "bit_xor",
+            Bytecode::BitNot(_) => "bit_not",
+            Bytecode::ShiftLeft(_) => "shift_left",
+            Bytecode::ShiftRight(_) => "shift_right",
+            Bytecode::UnsignedShiftRight(_) => "unsigned_shift_right",
+            // Enhanced arithmetic
+            Bytecode::DivRem(_) => "div_rem",
+            Bytecode::Abs(_) => "abs",
+            Bytecode::Neg(_) => "neg",
+            Bytecode::Min(_) => "min",
+            Bytecode::Max(_) => "max",
+            Bytecode::Sqrt(_) => "sqrt",
+            Bytecode::Pow(_) => "pow",
+            Bytecode::Sin(_) => "sin",
+            Bytecode::Cos(_) => "cos",
+            Bytecode::Tan(_) => "tan",
+            Bytecode::Log(_) => "log",
+            Bytecode::Exp(_) => "exp",
             Bytecode::Load(_, _) => "load",
             Bytecode::Store(_, _) => "store",
             Bytecode::LoadGlobal(_, _) => "load_global",
@@ -199,19 +473,83 @@ impl Bytecode {
             Bytecode::Dup(_) => "dup",
             Bytecode::Pop(_) => "pop",
             Bytecode::Swap(_) => "swap",
+            // String operations
+            Bytecode::StrLen(_) => "str_len",
+            Bytecode::StrConcat(_) => "str_concat",
+            Bytecode::StrSlice(_, _, _) => "str_slice",
+            Bytecode::StrIndex(_) => "str_index",
+            Bytecode::StrSplit(_, _) => "str_split",
             Bytecode::ListNew(_) => "list_new",
             Bytecode::ListLen(_) => "list_len",
             Bytecode::ListGet(_) => "list_get",
             Bytecode::ListSet(_) => "list_set",
             Bytecode::ListAppend(_) => "list_append",
+            // Array operations
+            Bytecode::ArraySlice(_, _, _) => "array_slice",
+            Bytecode::ArrayConcat(_) => "array_concat",
+            Bytecode::ArraySort(_) => "array_sort",
+            Bytecode::ArrayMap(_, _) => "array_map",
+            Bytecode::ArrayFilter(_, _) => "array_filter",
+            // Map operations
+            Bytecode::MapNew(_) => "map_new",
+            Bytecode::MapGet(_) => "map_get",
+            Bytecode::MapPut(_) => "map_put",
+            Bytecode::MapRemove(_) => "map_remove",
+            Bytecode::MapKeys(_) => "map_keys",
+            Bytecode::MapValues(_) => "map_values",
+            Bytecode::MapSize(_) => "map_size",
             Bytecode::SpawnProcess(_, _) => "spawn_process",
             Bytecode::SendMessage(_, _, _) => "send_message",
             Bytecode::ReceiveMessage(_) => "receive_message",
             Bytecode::Link(_, _) => "link",
             Bytecode::Monitor(_, _) => "monitor",
             Bytecode::Self_(_) => "self",
+            // Memory management
+            Bytecode::Alloc(_, _) => "alloc",
+            Bytecode::Free(_) => "free",
+            Bytecode::GcCollect(_) => "gc_collect",
+            Bytecode::GcInfo(_) => "gc_info",
+            Bytecode::WeakRef(_) => "weak_ref",
+            Bytecode::PhantomRef(_) => "phantom_ref",
+            // Atomic operations
+            Bytecode::AtomicLoad(_, _) => "atomic_load",
+            Bytecode::AtomicStore(_, _) => "atomic_store",
+            Bytecode::CompareAndSwap(_, _) => "compare_and_swap",
+            Bytecode::FetchAndAdd(_, _) => "fetch_and_add",
+            Bytecode::FetchAndSub(_, _) => "fetch_and_sub",
+            Bytecode::MemoryBarrier(_, _) => "memory_barrier",
+            Bytecode::Fence(_, _) => "fence",
             Bytecode::Print(_) => "print",
             Bytecode::Read(_) => "read",
+            // File I/O
+            Bytecode::FileOpen(_, _, _) => "file_open",
+            Bytecode::FileRead(_, _) => "file_read",
+            Bytecode::FileWrite(_) => "file_write",
+            Bytecode::FileClose(_) => "file_close",
+            Bytecode::FileSeek(_, _) => "file_seek",
+            Bytecode::FileStat(_) => "file_stat",
+            // Network I/O
+            Bytecode::SocketCreate(_, _) => "socket_create",
+            Bytecode::SocketBind(_) => "socket_bind",
+            Bytecode::SocketConnect(_) => "socket_connect",
+            Bytecode::SocketSend(_, _) => "socket_send",
+            Bytecode::SocketRecv(_, _) => "socket_recv",
+            Bytecode::SocketClose(_) => "socket_close",
+            // Time operations
+            Bytecode::GetTime(_) => "get_time",
+            Bytecode::Sleep(_) => "sleep",
+            Bytecode::SetTimer(_) => "set_timer",
+            Bytecode::CancelTimer(_) => "cancel_timer",
+            // Random operations
+            Bytecode::Random(_) => "random",
+            Bytecode::RandomSeed(_) => "random_seed",
+            Bytecode::RandomBytes(_, _) => "random_bytes",
+            // Cryptographic operations
+            Bytecode::Hash(_, _) => "hash",
+            Bytecode::Encrypt(_, _) => "encrypt",
+            Bytecode::Decrypt(_, _) => "decrypt",
+            Bytecode::Sign(_, _) => "sign",
+            Bytecode::Verify(_, _) => "verify",
             Bytecode::TypeOf(_) => "typeof",
             Bytecode::Cast(_, _) => "cast",
             Bytecode::Debug(_) => "debug",

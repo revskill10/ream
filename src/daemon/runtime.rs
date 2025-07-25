@@ -281,7 +281,7 @@ impl DaemonRuntime {
         let pid_str = fs::read_to_string(&self.config.pid_file)
             .map_err(|e| ReamError::Io(e))?;
         
-        let pid: u32 = pid_str.trim().parse()
+        let _pid: u32 = pid_str.trim().parse()
             .map_err(|e| ReamError::Other(format!("Invalid PID in file: {}", e)))?;
         
         #[cfg(unix)]
